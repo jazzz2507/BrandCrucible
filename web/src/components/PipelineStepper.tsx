@@ -1,7 +1,7 @@
 import React from 'react';
 
 export const STAGES = [
-  { id: 'Interviewer', name: '1. Interview', desc: 'Context & goals' },
+  { id: 'Interviewer', name: '1. Interviewer', desc: 'Context & goals' },
   { id: 'Discover', name: '2. Discover', desc: 'Audience & problem' },
   { id: 'Position', name: '3. Position', desc: 'Value proposition' },
   { id: 'Shape', name: '4. Shape', desc: 'Naming & personality' },
