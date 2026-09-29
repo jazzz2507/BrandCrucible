@@ -1,0 +1,53 @@
+import React from 'react';
+
+export const STAGES = [
+  { id: 'Interviewer', name: '1. Interviewer', desc: 'Context & goals' },
+  { id: 'Discover', name: '2. Discover', desc: 'Audience & problem' },
+  { id: 'Position', name: '3. Position', desc: 'Value proposition' },
+  { id: 'Shape', name: '4. Shape', desc: 'Naming & personality' },
+  { id: 'Visualize', name: '5. Visualize', desc: 'Palette & typography' },
+  { id: 'Challenge', name: '6. Challenge', desc: 'Cliché review loop' },
+  { id: 'Deliver', name: '7. Deliver', desc: 'Brand Kit Ready' },
+];
+
+interface Props {
+  currentStageIndex: number;
+}
+
+export const PipelineStepper: React.FC<Props> = ({ currentStageIndex }) => {
+  return (
+    <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl max-w-4xl mx-auto mb-8">
+      <div className="flex justify-between items-center mb-4">
+        <h3 className="text-xs font-semibold text-[var(--color-accent)] uppercase tracking-wider">
+          Multi-Agent Execution Pipeline
+        </h3>
+        <span className="text-xs font-mono text-[var(--color-muted)]">
+          Stage {currentStageIndex + 1} of {STAGES.length}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-7 gap-2">
+        {STAGES.map((stage, idx) => {
+          const isComplete = idx < currentStageIndex;
+          const isActive = idx === currentStageIndex;
+
+          return (
+            <div
+              key={stage.id}
+              className={`p-3 rounded-lg border text-xs transition-all ${
+                isActive
+                  ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-white font-semibold animate-pulse'
+                  : isComplete
+                  ? 'border-[var(--color-success)]/40 bg-[var(--color-success)]/5 text-[var(--color-success)]'
+                  : 'border-[var(--color-border)] text-[var(--color-muted)] opacity-60'
+              }`}
+            >
+              <div className="font-bold">{stage.name}</div>
+              <div className="text-[10px] mt-1 text-[var(--color-muted)]">{stage.desc}</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
