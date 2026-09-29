@@ -1,0 +1,13 @@
+{
+  "name": "brandcrucible-ai-pipeline",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pipeline": "node pipeline.js",
+    "test:stages": "node stages/discover.js && node stages/position.js && node stages/shape.js && node stages/visualize.js && node stages/deliver.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.24.0",
+    "zod": "^4.6.5"
+  }
+}
