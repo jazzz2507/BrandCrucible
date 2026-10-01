@@ -2,13 +2,19 @@ import os
 import json
 import asyncio
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, ConfigDict
+from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from sse_starlette.sse import EventSourceResponse
 
 from store import store
+from llm import call_stage_llm, LLMError
+from schemas import (
+    DiscoverSchema, PositionSchema, ShapeSchema, VisualizeSchema,
+    ChallengeSchema, DeliverSchema, ConsistencySchema, DeliverDiscovery, DeliverPositioning, DeliverBrandShape, DeliverVisualIdentity
+)
 
 load_dotenv()
 
@@ -17,7 +23,6 @@ ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 
 app = FastAPI(title="BrandCrucible API")
 
-# Enable CORS so your frontend can call these routes without errors
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -29,6 +34,9 @@ app.add_middleware(
 class IdeaInput(BaseModel):
     idea: str
 
+class StagePayload(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
 @app.get("/")
 def health_check():
     return {"status": "healthy", "service": "BrandCrucible API"}
@@ -37,7 +45,6 @@ def health_check():
 def health():
     return {"status": "ok"}
 
-# H2-8: Interviewer input route (Mock data for Frontend)
 @app.post("/api/interview/start")
 def start_interview(payload: IdeaInput):
     session = store.create(idea=payload.idea)
@@ -46,7 +53,6 @@ def start_interview(payload: IdeaInput):
         "question": f"Interesting idea: '{payload.idea}'. Who is your primary target customer?"
     }
 
-# H2-8: Mock Brand Kit deliverable route
 @app.get("/api/brand-kit/{session_id}")
 def get_brand_kit(session_id: str):
     session = store.get(session_id)
@@ -76,37 +82,201 @@ def get_brand_kit(session_id: str):
         }
     }
 
-STAGES = ["Interviewer", "Discover", "Position", "Shape", "Visualize", "Challenge", "Deliver"]
+STAGES = ["Discover", "Position", "Shape", "Visualize", "Challenge", "Deliver", "ConsistencyCheck"]
+
+prompts = {
+    "Discover": "You are the Discover agent. Identify the startup idea's likely primary and secondary audiences, the core problem, constraints, assumptions, and unanswered questions. This stage is research framing only: do not propose names, taglines, brand voice, positioning, or visual identity. Be specific to the supplied idea and distinguish known facts from assumptions. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}",
+    "Position": "You are the Position agent. Define a clear value proposition, differentiators, competitive angle, and positioning statement using the idea and discovery context. This stage is strategic positioning only: do not generate names, taglines, personality, voice, or visual directions. Be specific to this idea and audience, avoiding generic claims. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nDiscovery: {discovery}",
+    "Shape": "You are the Shape agent. Create candidate brand names with rationale and risk, personality traits, tagline options, and a concise voice description using the positioning context. This stage handles verbal identity only: do not revisit discovery, rewrite positioning, or suggest colors, typography, or imagery. Make ideas memorable and specific to this startup, not generic. If revision guidance is supplied, address it directly. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\n{revision_guidance}",
+    "Visualize": "You are the Visualize agent. Propose a cohesive color, typography, and imagery direction, with rationale grounded in the brand strategy and personality. This stage is visual direction only: do not invent names, taglines, or revise the positioning. Be concrete and specific to this brand rather than relying on generic design adjectives. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\nShape: {shape}",
+    "Challenge": "You are the Challenge agent. Critically assess one supplied brand item against its positioning context. Score cliche risk, distinctiveness, audience fit, and consistency with positioning from 0 to 10; for cliche risk, a higher score means lower risk / more original. Give actionable feedback and a pass, revise, or reject verdict. Do not generate a replacement or change the strategy. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nItem: {item}\nPositioning: {positioning}",
+    "Deliver": "You are the Deliver agent. Compile the validated prior-stage decisions into one clean, exportable brand kit using the supplied chosen name, tagline, discovery, positioning, verbal identity, and visual direction. This stage compiles only: do not invent missing strategy or add new creative directions. Keep every field specific and faithful to supplied outputs. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nName: {name}\nTagline: {tagline}\nDiscovery: {discovery}\nPositioning: {positioning}\nShape: {shape}\nVisual: {visual}",
+    "ConsistencyCheck": "You are the Consistency Check agent. Critically evaluate the final compiled brand kit as a whole against the original idea and prior stage decisions. Check specifically:\n1. Does the final brand name match the original idea?\n2. Does the tagline directly support the positioning?\n3. Do the brand personality traits match the discovered audience and problem?\n4. Does the visual identity fit the brand personality and positioning?\n5. Is there overall coherence across name, tagline, positioning, voice, and visual identity?\n6. Has the brand drifted from the core problem and audience of the original idea?\n\nEvaluate issues (if any) with area, description, and severity (\"minor\" | \"major\"). Provide an overall_score from 0 to 10, a boolean is_consistent (true if score >= 7 and no unaddressed major disconnects), and a concise summary (one or two sentences). Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nBrand Kit: {brand_kit}"
+}
+
+schemas = {
+    "Discover": DiscoverSchema,
+    "Position": PositionSchema,
+    "Shape": ShapeSchema,
+    "Visualize": VisualizeSchema,
+    "Challenge": ChallengeSchema,
+    "Deliver": DeliverSchema,
+    "ConsistencyCheck": ConsistencySchema
+}
+
+def average(scores: Dict[str, float]) -> float:
+    return sum(scores.values()) / len(scores)
+
+def needs_revision(result: ChallengeSchema) -> bool:
+    scores = result.scores.model_dump()
+    avg = average(scores)
+    return avg < 6.0 or any(v < 4.0 for v in scores.values()) or result.verdict != 'pass'
+
+def rank_by_score(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def mean(scores):
+        if not scores: return -1
+        return sum(scores.values()) / len(scores)
+        
+    def cmp(a, b):
+        is_pass_a = 1 if a.get("verdict") == 'pass' else 0
+        is_pass_b = 1 if b.get("verdict") == 'pass' else 0
+        if is_pass_a != is_pass_b:
+            return is_pass_b - is_pass_a
+        return mean(b.get("scores", {})) - mean(a.get("scores", {}))
+
+    import functools
+    return sorted(items, key=functools.cmp_to_key(cmp))
 
 async def run_stage(stage: str, session: BaseModel):
-    # Mock AI call placeholder
-    await asyncio.sleep(1)
-    
-    # Save mock output
-    mock_output = {"mock": f"data for {stage}"}
-    if stage == "Deliver":
-        mock_output = {
-            "sessionId": session.session_id,
-            "stage": "Deliver",
-            "brand": {
-                "name": "BrandCrucible",
-                "tagline": "Forge distinct identities, incinerate clichés",
-                "positioning": "The adversarial branding engine for ambitious founders",
-                "palette": ["#0F172A", "#38BDF8", "#F43F5E"],
-                "typography": {
-                    "heading": "Space Grotesk",
-                    "body": "Inter"
+    use_mock = os.environ.get("USE_MOCK_LLM", "true").lower() not in ("0", "false", "no")
+    if use_mock:
+        await asyncio.sleep(1)
+        mock_output = {"mock": f"data for {stage}"}
+        if stage == "Deliver":
+            mock_output = {
+                "sessionId": session.session_id,
+                "stage": "Deliver",
+                "brand": {
+                    "name": "BrandCrucible",
+                    "tagline": "Forge distinct identities, incinerate clichés",
+                    "positioning": "The adversarial branding engine for ambitious founders",
+                    "palette": ["#0F172A", "#38BDF8", "#F43F5E"],
+                    "typography": {
+                        "heading": "Space Grotesk",
+                        "body": "Inter"
+                    }
+                },
+                "challengeReport": {
+                    "clicheScore": 14,
+                    "distinctivenessScore": 92,
+                    "verdict": "Passed challenger review"
                 }
-            },
-            "challengeReport": {
-                "clicheScore": 14,
-                "distinctivenessScore": 92,
-                "verdict": "Passed challenger review"
             }
-        }
+        store.update_stage(session.session_id, stage, mock_output)
+        return mock_output
+
+    idea = session.idea
+    output = None
     
-    store.update_stage(session.session_id, stage, mock_output)
-    return mock_output
+    if stage == "Discover":
+        prompt = prompts["Discover"].format(idea=idea)
+        res = await call_stage_llm(stage, prompt, DiscoverSchema, session)
+        output = res.model_dump()
+    elif stage == "Position":
+        discovery = json.dumps(session.stage_outputs.get("Discover", {}))
+        prompt = prompts["Position"].format(idea=idea, discovery=discovery)
+        res = await call_stage_llm(stage, prompt, PositionSchema, session)
+        output = res.model_dump()
+    elif stage == "Shape":
+        positioning = json.dumps(session.stage_outputs.get("Position", {}))
+        prompt = prompts["Shape"].format(idea=idea, positioning=positioning, revision_guidance="")
+        res = await call_stage_llm(stage, prompt, ShapeSchema, session)
+        output = res.model_dump()
+    elif stage == "Visualize":
+        positioning = json.dumps(session.stage_outputs.get("Position", {}))
+        shape = json.dumps(session.stage_outputs.get("Shape", {}))
+        prompt = prompts["Visualize"].format(idea=idea, positioning=positioning, shape=shape)
+        res = await call_stage_llm(stage, prompt, VisualizeSchema, session)
+        output = res.model_dump()
+    elif stage == "Challenge":
+        positioning = json.dumps(session.stage_outputs.get("Position", {}))
+        shape_output = session.stage_outputs.get("Shape", {})
+        
+        candidates = []
+        for c in shape_output.get("candidates", []):
+            candidates.append({"type": "name", "value": c["name"]})
+        for t in shape_output.get("tagline_options", []):
+            candidates.append({"type": "tagline", "value": t})
+            
+        challenge_results = []
+        MAX_REVISIONS = 2
+        
+        for cand in candidates:
+            item_val = cand["value"]
+            history = []
+            best = None
+            revision = 0
+            
+            while revision <= MAX_REVISIONS:
+                prompt = prompts["Challenge"].format(item=item_val, positioning=positioning)
+                res = await call_stage_llm(stage, prompt, ChallengeSchema, session)
+                
+                res_dump = res.model_dump()
+                history.append(res_dump)
+                
+                scores_dump = res.scores.model_dump()
+                current_avg = average(scores_dump)
+                
+                if best is None or current_avg > average(best["result"]["scores"]):
+                    best = {"value": item_val, "result": res_dump, "attempt": revision}
+                    
+                if not needs_revision(res):
+                    break
+                    
+                if revision < MAX_REVISIONS:
+                    # Generate replacement
+                    rev_guide = f"Revision guidance: The previous candidate '{item_val}' failed. Feedback: {res.feedback}. Provide a better alternative."
+                    shape_prompt = prompts["Shape"].format(idea=idea, positioning=positioning, revision_guidance=rev_guide)
+                    new_shape = await call_stage_llm("Shape", shape_prompt, ShapeSchema, session)
+                    if cand["type"] == "name":
+                        item_val = new_shape.candidates[0].name
+                    else:
+                        item_val = new_shape.tagline_options[0]
+                    await asyncio.sleep(4.5)
+                revision += 1
+                
+            exhausted = False
+            best_res = ChallengeSchema.model_validate(best["result"])
+            if needs_revision(best_res) and len(history) == MAX_REVISIONS + 1:
+                exhausted = True
+                
+            final_verdict = 'revise' if needs_revision(best_res) else 'pass'
+            best["result"]["verdict"] = final_verdict
+            
+            challenge_results.append({
+                "type": cand["type"],
+                "value": best["value"],
+                "scores": best["result"]["scores"],
+                "verdict": final_verdict,
+                "feedback": best["result"]["feedback"],
+                "history": history,
+                "exhausted_revisions": exhausted
+            })
+            await asyncio.sleep(4.5)
+            
+        output = {"items": challenge_results}
+        
+    elif stage == "Deliver":
+        challenge_output = session.stage_outputs.get("Challenge", {})
+        shape_output = session.stage_outputs.get("Shape", {})
+        
+        items = challenge_output.get("items", [])
+        names = [i for i in items if i["type"] == "name"]
+        taglines = [i for i in items if i["type"] == "tagline"]
+        
+        ranked_names = rank_by_score(names)
+        ranked_taglines = rank_by_score(taglines)
+        
+        chosen_name = ranked_names[0]["value"] if ranked_names else (shape_output.get("candidates", [{}])[0].get("name", "Unknown"))
+        chosen_tagline = ranked_taglines[0]["value"] if ranked_taglines else (shape_output.get("tagline_options", [""])[0])
+        
+        discovery = json.dumps(session.stage_outputs.get("Discover", {}))
+        positioning = json.dumps(session.stage_outputs.get("Position", {}))
+        shape = json.dumps(session.stage_outputs.get("Shape", {}))
+        visual = json.dumps(session.stage_outputs.get("Visualize", {}))
+        
+        prompt = prompts["Deliver"].format(name=chosen_name, tagline=chosen_tagline, discovery=discovery, positioning=positioning, shape=shape, visual=visual)
+        res = await call_stage_llm(stage, prompt, DeliverSchema, session)
+        output = res.model_dump()
+        
+    elif stage == "ConsistencyCheck":
+        brand_kit = json.dumps(session.stage_outputs.get("Deliver", {}))
+        prompt = prompts["ConsistencyCheck"].format(idea=idea, brand_kit=brand_kit)
+        res = await call_stage_llm(stage, prompt, ConsistencySchema, session)
+        output = res.model_dump()
+
+    store.update_stage(session.session_id, stage, output)
+    return output
 
 @app.get("/api/pipeline/stream/{session_id}")
 async def stream_pipeline(session_id: str, request: Request):
@@ -114,7 +284,9 @@ async def stream_pipeline(session_id: str, request: Request):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    store.set_status(session_id, "running")
+    is_golden = session_id == "golden-demo"
+    if not is_golden:
+        store.set_status(session_id, "running")
 
     async def event_generator():
         try:
@@ -123,7 +295,6 @@ async def stream_pipeline(session_id: str, request: Request):
                 if await request.is_disconnected():
                     break
                     
-                # Emit stage_start
                 yield {
                     "event": "stage_start",
                     "data": json.dumps({
@@ -134,10 +305,12 @@ async def stream_pipeline(session_id: str, request: Request):
                     })
                 }
                 
-                # Run stage logic
-                output = await run_stage(stage, session)
+                if is_golden:
+                    await asyncio.sleep(0.04)
+                    output = session.stage_outputs.get(stage, {})
+                else:
+                    output = await run_stage(stage, session)
                 
-                # Emit stage_complete
                 yield {
                     "event": "stage_complete",
                     "data": json.dumps({
@@ -151,10 +324,13 @@ async def stream_pipeline(session_id: str, request: Request):
                 
             store.set_status(session_id, "complete")
             
-            # After last stage emit done
             yield {
                 "event": "done",
-                "data": json.dumps(store.get(session_id).stage_outputs.get("Deliver", {}))
+                "data": json.dumps({
+                    "brandKit": session.stage_outputs.get("Deliver", {}),
+                    "consistencyCheck": session.stage_outputs.get("ConsistencyCheck", {}),
+                    "trace": session.trace
+                })
             }
             
         except Exception as e:
@@ -168,3 +344,35 @@ async def stream_pipeline(session_id: str, request: Request):
         event_generator(),
         ping=15
     )
+
+@app.get("/api/trace/{session_id}")
+def get_trace(session_id: str):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"sessionId": session_id, "trace": session.trace}
+
+@app.get("/api/export/{session_id}")
+def export_brand_kit(session_id: str):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if session.status != "complete":
+        raise HTTPException(status_code=409, detail="Session is not complete")
+    kit = session.stage_outputs.get("Deliver", {})
+    brand_name = kit.get("brand_name", "Brand Kit")
+    tagline = kit.get("tagline", "")
+    pos = kit.get("positioning", {})
+    
+    lines = [f"# {brand_name}", "", f"> {tagline}", "",
+             "## Positioning", "", pos.get("positioning_statement", ""), ""]
+             
+    if kit.get("discovery") and kit["discovery"].get("audience"):
+        lines += ["## Audience", "", f"Primary: {kit['discovery']['audience'].get('primary', '')}", ""]
+        
+    visual = kit.get("visual_identity", {})
+    if visual.get("color_direction"):
+        lines += ["## Visual Identity", "", f"Colors: {visual['color_direction']}", ""]
+        
+    return Response("\n".join(lines), media_type="text/markdown",
+                    headers={"Content-Disposition": f'attachment; filename="brand-kit-{session_id}.md"'})
