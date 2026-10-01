@@ -1,6 +1,8 @@
 import os
 import json
 import asyncio
+import time
+import datetime
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from sse_starlette.sse import EventSourceResponse
+from collections import defaultdict
 
 from store import store
 from llm import call_stage_llm, LLMError
@@ -45,12 +48,75 @@ def health_check():
 def health():
     return {"status": "ok"}
 
+RATE_LIMIT_SESSIONS_PER_HOUR = int(os.environ.get("RATE_LIMIT_SESSIONS_PER_HOUR", 5))
+ip_sessions = defaultdict(list)
+
+def check_rate_limit(request: Request):
+    ip = request.headers.get("x-forwarded-for")
+    if ip:
+        ip = ip.split(",")[0].strip()
+    else:
+        ip = request.client.host
+        
+    now = time.time()
+    hour_ago = now - 3600
+    
+    # cleanup old
+    ip_sessions[ip] = [t for t in ip_sessions[ip] if t > hour_ago]
+    
+    if len(ip_sessions[ip]) >= RATE_LIMIT_SESSIONS_PER_HOUR:
+        oldest = ip_sessions[ip][0]
+        retry_after = int(3600 - (now - oldest))
+        raise HTTPException(
+            status_code=429,
+            detail="Rate limit exceeded. Try again later.",
+            headers={"Retry-After": str(retry_after)}
+        )
+    
+    ip_sessions[ip].append(now)
+
+MAX_CONCURRENT_PIPELINES = int(os.environ.get("MAX_CONCURRENT_PIPELINES", 2))
+MAX_QUEUE_LENGTH = int(os.environ.get("MAX_QUEUE_LENGTH", 5))
+SESSION_TTL_HOURS = int(os.environ.get("SESSION_TTL_HOURS", 24))
+
+pipeline_semaphore = None
+queue_waiters = 0
+
+async def cleanup_sessions_task():
+    while True:
+        await asyncio.sleep(3600)
+        now = datetime.datetime.utcnow()
+        ttl_delta = datetime.timedelta(hours=SESSION_TTL_HOURS)
+        to_delete = []
+        for sid, sess in store._store.items():
+            if sid == "golden-demo": continue
+            if sess.status in ("complete", "error") and now - sess.created_at > ttl_delta:
+                to_delete.append(sid)
+        for sid in to_delete:
+            del store._store[sid]
+            store._conditions.pop(sid, None)
+            store._tasks.pop(sid, None)
+
+@app.on_event("startup")
+async def startup_event():
+    global pipeline_semaphore
+    pipeline_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PIPELINES)
+    asyncio.create_task(cleanup_sessions_task())
+
 @app.post("/api/interview/start")
-def start_interview(payload: IdeaInput):
-    session = store.create(idea=payload.idea)
+def start_interview(payload: IdeaInput, request: Request):
+    idea = payload.idea.strip()
+    if len(idea) < 10:
+        raise HTTPException(status_code=422, detail="Idea must be at least 10 characters.")
+    if len(idea) > int(os.environ.get("MAX_IDEA_CHARS", 500)):
+        raise HTTPException(status_code=422, detail="Idea must be less than MAX_IDEA_CHARS characters.")
+        
+    check_rate_limit(request)
+    
+    session = store.create(idea=idea)
     return {
         "sessionId": session.session_id,
-        "question": f"Interesting idea: '{payload.idea}'. Who is your primary target customer?"
+        "question": f"Interesting idea: '{idea}'. Who is your primary target customer?"
     }
 
 @app.get("/api/brand-kit/{session_id}")
@@ -278,24 +344,45 @@ async def run_stage(stage: str, session: BaseModel):
     store.update_stage(session.session_id, stage, output)
     return output
 
-@app.get("/api/pipeline/stream/{session_id}")
-async def stream_pipeline(session_id: str, request: Request):
+async def run_pipeline_task(session_id: str):
     session = store.get(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        return
         
     is_golden = session_id == "golden-demo"
-    if not is_golden:
-        store.set_status(session_id, "running")
+    timeout = int(os.environ.get("PIPELINE_TIMEOUT_SECONDS", 600))
+    
+    async def _execute():
+        global queue_waiters
+        if not is_golden:
+            if pipeline_semaphore.locked():
+                if queue_waiters >= MAX_QUEUE_LENGTH:
+                    await store.add_event(session_id, {
+                        "event": "error",
+                        "data": json.dumps({"message": "Server is busy. Try the demo session."})
+                    })
+                    store.set_status(session_id, "error")
+                    return
+                
+                queue_waiters += 1
+                await store.add_event(session_id, {
+                    "event": "queued",
+                    "data": json.dumps({"sessionId": session_id, "position": queue_waiters})
+                })
+                async with pipeline_semaphore:
+                    queue_waiters -= 1
+                    await _do_run()
+            else:
+                async with pipeline_semaphore:
+                    await _do_run()
+        else:
+            await _do_run()
 
-    async def event_generator():
+    async def _do_run():
         try:
             total = len(STAGES)
             for i, stage in enumerate(STAGES):
-                if await request.is_disconnected():
-                    break
-                    
-                yield {
+                await store.add_event(session_id, {
                     "event": "stage_start",
                     "data": json.dumps({
                         "sessionId": session_id,
@@ -303,15 +390,15 @@ async def stream_pipeline(session_id: str, request: Request):
                         "index": i,
                         "total": total
                     })
-                }
+                })
                 
                 if is_golden:
-                    await asyncio.sleep(0.04)
+                    await asyncio.sleep(0.4)
                     output = session.stage_outputs.get(stage, {})
                 else:
                     output = await run_stage(stage, session)
                 
-                yield {
+                await store.add_event(session_id, {
                     "event": "stage_complete",
                     "data": json.dumps({
                         "sessionId": session_id,
@@ -320,26 +407,84 @@ async def stream_pipeline(session_id: str, request: Request):
                         "total": total,
                         "output": output
                     })
-                }
+                })
                 
             store.set_status(session_id, "complete")
             
-            yield {
+            await store.add_event(session_id, {
                 "event": "done",
                 "data": json.dumps({
                     "brandKit": session.stage_outputs.get("Deliver", {}),
                     "consistencyCheck": session.stage_outputs.get("ConsistencyCheck", {}),
                     "trace": session.trace
                 })
-            }
+            })
             
         except Exception as e:
             store.set_status(session_id, "error")
-            yield {
+            await store.add_event(session_id, {
                 "event": "error",
                 "data": json.dumps({"message": str(e)})
-            }
-            
+            })
+
+    try:
+        if is_golden:
+            await _execute()
+        else:
+            await asyncio.wait_for(_execute(), timeout=timeout)
+    except asyncio.TimeoutError:
+        store.set_status(session_id, "error")
+        await store.add_event(session_id, {
+            "event": "error",
+            "data": json.dumps({"message": "Pipeline timed out"})
+        })
+    except Exception as e:
+        store.set_status(session_id, "error")
+        await store.add_event(session_id, {
+            "event": "error",
+            "data": json.dumps({"message": str(e)})
+        })
+
+
+@app.get("/api/pipeline/stream/{session_id}")
+async def stream_pipeline(session_id: str, request: Request):
+    session = store.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    if session.status == "created":
+        store.set_status(session_id, "running")
+        task = asyncio.create_task(run_pipeline_task(session_id))
+        store._tasks[session_id] = task
+        
+    last_event_id = request.headers.get("Last-Event-ID")
+    start_index = int(last_event_id) + 1 if last_event_id and last_event_id.isdigit() else 0
+
+    async def event_generator():
+        idx = start_index
+        cond = store.get_condition(session_id)
+        
+        while True:
+            if await request.is_disconnected():
+                break
+                
+            while idx < len(session.events):
+                ev = session.events[idx]
+                yield {
+                    "event": ev["event"],
+                    "data": ev["data"],
+                    "id": str(idx)
+                }
+                if ev["event"] in ("done", "error"):
+                    return
+                idx += 1
+                
+            if session.status in ("complete", "error") and idx >= len(session.events):
+                return
+                
+            async with cond:
+                await cond.wait()
+
     return EventSourceResponse(
         event_generator(),
         ping=15
