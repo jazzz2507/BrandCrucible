@@ -82,6 +82,12 @@ SESSION_TTL_HOURS = int(os.environ.get("SESSION_TTL_HOURS", 24))
 pipeline_semaphore = None
 queue_waiters = 0
 
+def get_pipeline_semaphore():
+    global pipeline_semaphore
+    if pipeline_semaphore is None:
+        pipeline_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PIPELINES)
+    return pipeline_semaphore
+
 async def cleanup_sessions_task():
     while True:
         await asyncio.sleep(3600)
@@ -99,8 +105,7 @@ async def cleanup_sessions_task():
 
 @app.on_event("startup")
 async def startup_event():
-    global pipeline_semaphore
-    pipeline_semaphore = asyncio.Semaphore(MAX_CONCURRENT_PIPELINES)
+    get_pipeline_semaphore()
     asyncio.create_task(cleanup_sessions_task())
 
 @app.post("/api/interview/start")
@@ -193,6 +198,84 @@ def rank_by_score(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     import functools
     return sorted(items, key=functools.cmp_to_key(cmp))
 
+def select_candidate(ranked_items: List[Dict[str, Any]], fallback_candidates: List[Any], fallback_key: str = "name") -> str:
+    if ranked_items:
+        return ranked_items[0].get("value", "")
+    if fallback_candidates:
+        cand = fallback_candidates[0]
+        if isinstance(cand, dict):
+            return cand.get(fallback_key, "Unknown")
+        elif isinstance(cand, str):
+            return cand
+        elif hasattr(cand, fallback_key):
+            return getattr(cand, fallback_key, "Unknown")
+    return "Unknown"
+
+MAX_REVISIONS = 2
+
+async def run_challenger_item(
+    cand: Dict[str, str],
+    idea: str,
+    positioning: str,
+    session: Optional[BaseModel] = None,
+    call_llm_fn=None,
+    sleep_fn=None
+) -> Dict[str, Any]:
+    if call_llm_fn is None:
+        call_llm_fn = call_stage_llm
+    if sleep_fn is None:
+        sleep_fn = asyncio.sleep
+    item_val = cand["value"]
+    history = []
+    best = None
+    revision = 0
+    
+    while revision <= MAX_REVISIONS:
+        prompt = prompts["Challenge"].format(item=item_val, positioning=positioning)
+        res = await call_llm_fn("Challenge", prompt, ChallengeSchema, session)
+        
+        res_dump = res.model_dump()
+        history.append(res_dump)
+        
+        scores_dump = res.scores.model_dump()
+        current_avg = average(scores_dump)
+        
+        if best is None or current_avg > average(best["result"]["scores"]):
+            best = {"value": item_val, "result": res_dump, "attempt": revision}
+            
+        if not needs_revision(res):
+            break
+            
+        if revision < MAX_REVISIONS:
+            # Generate replacement
+            rev_guide = f"Revision guidance: The previous candidate '{item_val}' failed. Feedback: {res.feedback}. Provide a better alternative."
+            shape_prompt = prompts["Shape"].format(idea=idea, positioning=positioning, revision_guidance=rev_guide)
+            new_shape = await call_llm_fn("Shape", shape_prompt, ShapeSchema, session)
+            if cand["type"] == "name":
+                item_val = new_shape.candidates[0].name
+            else:
+                item_val = new_shape.tagline_options[0]
+            await sleep_fn(4.5)
+        revision += 1
+        
+    exhausted = False
+    best_res = ChallengeSchema.model_validate(best["result"])
+    if needs_revision(best_res) and len(history) == MAX_REVISIONS + 1:
+        exhausted = True
+        
+    final_verdict = 'revise' if needs_revision(best_res) else 'pass'
+    best["result"]["verdict"] = final_verdict
+    
+    return {
+        "type": cand["type"],
+        "value": best["value"],
+        "scores": best["result"]["scores"],
+        "verdict": final_verdict,
+        "feedback": best["result"]["feedback"],
+        "history": history,
+        "exhausted_revisions": exhausted
+    }
+
 async def run_stage(stage: str, session: BaseModel):
     use_mock = os.environ.get("USE_MOCK_LLM", "true").lower() not in ("0", "false", "no")
     if use_mock:
@@ -253,61 +336,10 @@ async def run_stage(stage: str, session: BaseModel):
             candidates.append({"type": "name", "value": c["name"]})
         for t in shape_output.get("tagline_options", []):
             candidates.append({"type": "tagline", "value": t})
-            
         challenge_results = []
-        MAX_REVISIONS = 2
-        
         for cand in candidates:
-            item_val = cand["value"]
-            history = []
-            best = None
-            revision = 0
-            
-            while revision <= MAX_REVISIONS:
-                prompt = prompts["Challenge"].format(item=item_val, positioning=positioning)
-                res = await call_stage_llm(stage, prompt, ChallengeSchema, session)
-                
-                res_dump = res.model_dump()
-                history.append(res_dump)
-                
-                scores_dump = res.scores.model_dump()
-                current_avg = average(scores_dump)
-                
-                if best is None or current_avg > average(best["result"]["scores"]):
-                    best = {"value": item_val, "result": res_dump, "attempt": revision}
-                    
-                if not needs_revision(res):
-                    break
-                    
-                if revision < MAX_REVISIONS:
-                    # Generate replacement
-                    rev_guide = f"Revision guidance: The previous candidate '{item_val}' failed. Feedback: {res.feedback}. Provide a better alternative."
-                    shape_prompt = prompts["Shape"].format(idea=idea, positioning=positioning, revision_guidance=rev_guide)
-                    new_shape = await call_stage_llm("Shape", shape_prompt, ShapeSchema, session)
-                    if cand["type"] == "name":
-                        item_val = new_shape.candidates[0].name
-                    else:
-                        item_val = new_shape.tagline_options[0]
-                    await asyncio.sleep(4.5)
-                revision += 1
-                
-            exhausted = False
-            best_res = ChallengeSchema.model_validate(best["result"])
-            if needs_revision(best_res) and len(history) == MAX_REVISIONS + 1:
-                exhausted = True
-                
-            final_verdict = 'revise' if needs_revision(best_res) else 'pass'
-            best["result"]["verdict"] = final_verdict
-            
-            challenge_results.append({
-                "type": cand["type"],
-                "value": best["value"],
-                "scores": best["result"]["scores"],
-                "verdict": final_verdict,
-                "feedback": best["result"]["feedback"],
-                "history": history,
-                "exhausted_revisions": exhausted
-            })
+            res_item = await run_challenger_item(cand, idea, positioning, session)
+            challenge_results.append(res_item)
             await asyncio.sleep(4.5)
             
         output = {"items": challenge_results}
@@ -323,8 +355,8 @@ async def run_stage(stage: str, session: BaseModel):
         ranked_names = rank_by_score(names)
         ranked_taglines = rank_by_score(taglines)
         
-        chosen_name = ranked_names[0]["value"] if ranked_names else (shape_output.get("candidates", [{}])[0].get("name", "Unknown"))
-        chosen_tagline = ranked_taglines[0]["value"] if ranked_taglines else (shape_output.get("tagline_options", [""])[0])
+        chosen_name = select_candidate(ranked_names, shape_output.get("candidates", []), fallback_key="name")
+        chosen_tagline = select_candidate(ranked_taglines, shape_output.get("tagline_options", []), fallback_key="")
         
         discovery = json.dumps(session.stage_outputs.get("Discover", {}))
         positioning = json.dumps(session.stage_outputs.get("Position", {}))
@@ -355,7 +387,8 @@ async def run_pipeline_task(session_id: str):
     async def _execute():
         global queue_waiters
         if not is_golden:
-            if pipeline_semaphore.locked():
+            sem = get_pipeline_semaphore()
+            if sem.locked():
                 if queue_waiters >= MAX_QUEUE_LENGTH:
                     await store.add_event(session_id, {
                         "event": "error",
@@ -369,11 +402,11 @@ async def run_pipeline_task(session_id: str):
                     "event": "queued",
                     "data": json.dumps({"sessionId": session_id, "position": queue_waiters})
                 })
-                async with pipeline_semaphore:
+                async with sem:
                     queue_waiters -= 1
                     await _do_run()
             else:
-                async with pipeline_semaphore:
+                async with sem:
                     await _do_run()
         else:
             await _do_run()

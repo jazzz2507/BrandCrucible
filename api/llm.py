@@ -20,7 +20,7 @@ def clean_provider_schema(schema: dict) -> dict:
         return [clean_provider_schema(item) for item in schema]
     return schema
 
-async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: BaseModel = None) -> T:
+async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: BaseModel = None, client: Any = None) -> T:
     try:
         from google import genai
         from google.genai import types
@@ -28,11 +28,12 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
     except ImportError as exc:
         raise LLMError("The google-genai package is required when USE_MOCK_LLM=false") from exc
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        raise LLMError("GEMINI_API_KEY must be set when USE_MOCK_LLM=false")
+    if client is None:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise LLMError("GEMINI_API_KEY must be set when USE_MOCK_LLM=false")
+        client = genai.Client(api_key=api_key)
     
-    client = genai.Client(api_key=api_key)
     model_name = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
     cleaned_schema = clean_provider_schema(schema.model_json_schema())
@@ -67,12 +68,13 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
             
         except errors.APIError as exc:
             code = getattr(exc, "code", None)
-            if code == 429 or "429" in str(exc) or "ResourceExhausted" in str(exc):
+            err_msg = str(exc)
+            if code == 429 or "429" in err_msg or "ResourceExhausted" in err_msg:
+                failure_kind = "429"
                 retries_429 += 1
                 if retries_429 > 3:
-                    raise LLMError(f"Exceeded 3 429 retries: {exc}")
+                    raise LLMError(f"Exceeded 3 429 retries: {err_msg}")
                 
-                err_msg = str(exc)
                 match = re.search(r"(?:retryDelay|retry_delay)['\"]?\s*[:=]\s*['\"]?([0-9.]+)\s*s?", err_msg, re.IGNORECASE)
                 if not match:
                     match = re.search(r"(?:retry|wait)\s+(?:in|after)\s+([0-9.]+)\s*(?:s|seconds)?", err_msg, re.IGNORECASE)
@@ -87,7 +89,7 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
                     "attempt": attempt,
                     "prompt": retry_prompt,
                     "rawResponse": raw,
-                    "error": str(exc),
+                    "error": err_msg,
                     "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()
                 }
                 if session is not None:
@@ -95,21 +97,29 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
                     
                 await asyncio.sleep(delay)
                 continue
-            elif code == 503 or "503" in str(exc) or "ServiceUnavailable" in str(exc) or "connection" in str(exc).lower():
+            elif code in (400, 401, 403, 404) or "API_KEY_INVALID" in err_msg or "not found" in err_msg.lower():
+                raise LLMError(f"Fatal API error: {err_msg}")
+            elif code == 503 or "503" in err_msg or "ServiceUnavailable" in err_msg or "connection" in err_msg.lower():
+                failure_kind = "503"
+                error_msg = err_msg
                 delay = min(attempt * 15.0, 60.0)
                 await asyncio.sleep(delay)
-                error_msg = str(exc)
             else:
-                error_msg = str(exc)
+                failure_kind = "unknown_api_error"
+                error_msg = err_msg
         except (ValidationError, json.JSONDecodeError) as exc:
+            failure_kind = "validation"
             error_msg = str(exc)
         except Exception as exc:
-            if "503" in str(exc) or "ServiceUnavailable" in str(exc) or "connection" in str(exc).lower():
+            err_msg = str(exc)
+            if "503" in err_msg or "ServiceUnavailable" in err_msg or "connection" in err_msg.lower():
+                failure_kind = "503"
+                error_msg = err_msg
                 delay = min(attempt * 15.0, 60.0)
                 await asyncio.sleep(delay)
-                error_msg = str(exc)
             else:
-                error_msg = str(exc)
+                failure_kind = "unknown"
+                error_msg = err_msg
 
         last_error = error_msg
         
@@ -127,7 +137,7 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
         if result is not None and error_msg is None:
             return result
             
-        if error_msg and ("validation" in error_msg.lower() or "json" in error_msg.lower() or "decode" in error_msg.lower() or isinstance(exc, (ValidationError, json.JSONDecodeError))):
+        if failure_kind == "validation":
             retry_prompt = f"{prompt}\n\nYour previous output failed: {error_msg}. Fix the problem and return corrected JSON only."
         
         attempt += 1
