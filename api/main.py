@@ -11,6 +11,7 @@ from typing import List, Optional, Dict, Any
 from dotenv import load_dotenv
 from sse_starlette.sse import EventSourceResponse
 from collections import defaultdict
+from contextlib import asynccontextmanager
 
 from store import store
 from llm import call_stage_llm, LLMError
@@ -24,7 +25,17 @@ load_dotenv()
 PORT = int(os.environ.get("PORT", 8000))
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
 
-app = FastAPI(title="BrandCrucible API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    use_mock = os.environ.get("USE_MOCK_LLM", "true").lower() not in ("0", "false", "no")
+    if not use_mock and not os.environ.get("GEMINI_API_KEY"):
+        raise RuntimeError("GEMINI_API_KEY must be set when USE_MOCK_LLM=false")
+    get_pipeline_semaphore()
+    task = asyncio.create_task(cleanup_sessions_task())
+    yield
+    task.cancel()
+
+app = FastAPI(title="BrandCrucible API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -91,7 +102,7 @@ def get_pipeline_semaphore():
 async def cleanup_sessions_task():
     while True:
         await asyncio.sleep(3600)
-        now = datetime.datetime.utcnow()
+        now = datetime.datetime.now(datetime.timezone.utc)
         ttl_delta = datetime.timedelta(hours=SESSION_TTL_HOURS)
         to_delete = []
         for sid, sess in store._store.items():
@@ -102,11 +113,6 @@ async def cleanup_sessions_task():
             del store._store[sid]
             store._conditions.pop(sid, None)
             store._tasks.pop(sid, None)
-
-@app.on_event("startup")
-async def startup_event():
-    get_pipeline_semaphore()
-    asyncio.create_task(cleanup_sessions_task())
 
 @app.post("/api/interview/start")
 def start_interview(payload: IdeaInput, request: Request):
