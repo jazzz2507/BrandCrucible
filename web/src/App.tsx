@@ -51,10 +51,13 @@ export default function App() {
           if (event.traceLog) {
             setTraceLogs((prev) => [...prev, event.traceLog!]);
           }
+          if (event.traceLogs?.length) {
+            setTraceLogs((prev) => [...prev, ...event.traceLogs!]);
+          }
           if (event.payload) {
             setBrandKitData((prev) => ({ ...prev, ...event.payload }));
           }
-          if (event.isComplete || event.stageIndex >= STAGES.length - 1) {
+          if (event.isComplete === true) {
             setTimeout(() => setViewState('dashboard'), 1200);
           }
         },
@@ -67,6 +70,38 @@ export default function App() {
       console.warn('Backend endpoint unreachable. Falling back to demo simulation mode.');
       startSimulationMode();
     }
+  };
+
+  const handleStartGoldenDemo = () => {
+    setViewState('running');
+    setCurrentStageIndex(0);
+    setTraceLogs([]);
+    setIsSimulated(false);
+
+    cleanupStreamRef.current = subscribeToPipelineStream(
+      'golden-demo',
+      (event) => {
+        if (typeof event.stageIndex === 'number') {
+          setCurrentStageIndex(event.stageIndex);
+        }
+        if (event.traceLog) {
+          setTraceLogs((prev) => [...prev, event.traceLog!]);
+        }
+        if (event.traceLogs?.length) {
+          setTraceLogs((prev) => [...prev, ...event.traceLogs!]);
+        }
+        if (event.payload) {
+          setBrandKitData((prev) => ({ ...prev, ...event.payload }));
+        }
+        if (event.isComplete === true) {
+          setTimeout(() => setViewState('dashboard'), 1200);
+        }
+      },
+      (_err) => {
+        console.warn('Backend connection failed. Switching to demo simulation mode.');
+        startSimulationMode();
+      }
+    );
   };
 
   useEffect(() => {
@@ -113,7 +148,7 @@ export default function App() {
         )}
       </header>
 
-      {viewState === 'intake' && <Intake onStartPipeline={handleStartPipeline} />}
+      {viewState === 'intake' && <Intake onStartPipeline={handleStartPipeline} onStartGoldenDemo={handleStartGoldenDemo} />}
 
       {viewState === 'running' && (
         <div className="space-y-6">

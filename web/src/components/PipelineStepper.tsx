@@ -1,13 +1,13 @@
 import React from 'react';
 
 export const STAGES = [
-  { id: 'Interviewer', name: '1. Interviewer', desc: 'Context & goals' },
-  { id: 'Discover', name: '2. Discover', desc: 'Audience & problem' },
-  { id: 'Position', name: '3. Position', desc: 'Value proposition' },
-  { id: 'Shape', name: '4. Shape', desc: 'Naming & personality' },
-  { id: 'Visualize', name: '5. Visualize', desc: 'Palette & typography' },
-  { id: 'Challenge', name: '6. Challenge', desc: 'Cliché review loop' },
-  { id: 'Deliver', name: '7. Deliver', desc: 'Brand Kit Ready' },
+  { id: 'Discover', name: '1. Discover', desc: 'Audience & problem' },
+  { id: 'Position', name: '2. Position', desc: 'Value proposition' },
+  { id: 'Shape', name: '3. Shape', desc: 'Naming & personality' },
+  { id: 'Visualize', name: '4. Visualize', desc: 'Palette & typography' },
+  { id: 'Challenge', name: '5. Challenge', desc: 'Cliché review loop' },
+  { id: 'Deliver', name: '6. Deliver', desc: 'Compile brand kit' },
+  { id: 'ConsistencyCheck', name: '7. ConsistencyCheck', desc: 'Coherence audit' },
 ];
 
 interface Props {

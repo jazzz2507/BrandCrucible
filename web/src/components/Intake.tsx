@@ -1,9 +1,11 @@
+import React, { useState } from 'react';
 
 interface Props {
   onStartPipeline: (idea: string) => void;
+  onStartGoldenDemo?: () => void;
 }
 
-export const Intake: React.FC<Props> = ({ onStartPipeline }) => {
+export const Intake: React.FC<Props> = ({ onStartPipeline, onStartGoldenDemo }) => {
   const [idea, setIdea] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -42,6 +44,15 @@ export const Intake: React.FC<Props> = ({ onStartPipeline }) => {
         >
           Fire Up Brand Engine →
         </button>
+        {onStartGoldenDemo && (
+          <button
+            type="button"
+            onClick={onStartGoldenDemo}
+            className="w-full bg-transparent border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 font-bold py-3 rounded-lg text-sm transition-all cursor-pointer"
+          >
+            ⚡ Watch Instant Golden Demo (CommonGround)
+          </button>
+        )}
       </form>
     </div>
   );

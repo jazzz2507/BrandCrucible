@@ -11,6 +11,11 @@ export type BrandKitData = {
   brandName?: string;
   tagline?: string;
   description?: string;
+  discovery?: any;
+  positioning?: any;
+  brandShape?: any;
+  visualIdentity?: any;
+  consistencyCheck?: any;
   palette?: Array<{ name: string; hex: string }>;
   typography?: { headerFont: string; bodyFont: string };
   challengerLogs?: ChallengerLog[];
@@ -22,10 +27,11 @@ export type PipelineStreamEvent = {
   stageName?: string;
   payload?: BrandKitData;
   traceLog?: ChallengerLog;
+  traceLogs?: ChallengerLog[];
   isComplete?: boolean;
 };
 
-const STAGE_IDS = ['Interviewer', 'Discover', 'Position', 'Shape', 'Visualize', 'Challenge', 'Deliver'];
+const STAGE_IDS = ['Discover', 'Position', 'Shape', 'Visualize', 'Challenge', 'Deliver', 'ConsistencyCheck'];
 
 function stageIndexFor(stageId: string | undefined): number {
   if (!stageId) return 0;
@@ -72,11 +78,39 @@ export function subscribeToPipelineStream(
   eventSource.addEventListener('stage_complete', (e: MessageEvent) => {
     try {
       const data = JSON.parse(e.data);
+      let traceLogs: ChallengerLog[] | undefined;
+      let payload: BrandKitData | undefined;
+
+      if (data.stage === 'Challenge' && Array.isArray(data.output?.items)) {
+        traceLogs = data.output.items.map((item: any) => {
+          const h = item.history && item.history.length ? item.history[item.history.length - 1] : { feedback: item.feedback, verdict: item.verdict };
+          return {
+            stage: `Challenge (${item.type}: ${item.value || item.item || '?'})`,
+            critique: `${h.feedback || item.feedback} [verdict: ${(h.verdict || item.verdict || '').toUpperCase()}]`,
+            status: (h.verdict || item.verdict) === 'pass' ? 'approved' : 'rejected',
+            timestamp: new Date().toISOString()
+          } as ChallengerLog;
+        });
+      }
+      
+      if (data.stage === 'Deliver' && data.output) {
+        const out = data.output;
+        payload = {
+          brandName: out.brand_name,
+          tagline: out.tagline,
+          discovery: out.discovery,
+          positioning: out.positioning,
+          brandShape: out.brand_shape,
+          visualIdentity: out.visual_identity,
+        };
+      }
+
       onEvent({
         stageIndex: stageIndexFor(data.stage),
         stageName: data.stage,
-        payload: data.payload,
+        payload: payload || data.payload,
         traceLog: data.traceLog,
+        traceLogs: traceLogs,
       });
     } catch (err) {
       console.error('Failed to parse stage_complete payload:', err);
@@ -88,9 +122,24 @@ export function subscribeToPipelineStream(
   eventSource.addEventListener('done', (e: MessageEvent) => {
     try {
       const data = e.data ? JSON.parse(e.data) : {};
+      let payload: BrandKitData | undefined;
+      
+      if (data.brandKit || data.consistencyCheck) {
+        const out = data.brandKit || {};
+        payload = {
+          brandName: out.brand_name,
+          tagline: out.tagline,
+          discovery: out.discovery,
+          positioning: out.positioning,
+          brandShape: out.brand_shape,
+          visualIdentity: out.visual_identity,
+          consistencyCheck: data.consistencyCheck,
+        };
+      }
+
       onEvent({
         stageIndex: STAGE_IDS.length - 1,
-        payload: data.payload,
+        payload: payload || data.payload,
         isComplete: true,
       });
     } catch (err) {
