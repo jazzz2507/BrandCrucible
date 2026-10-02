@@ -52,7 +52,15 @@ export default function App() {
             setTraceLogs((prev) => [...prev, event.traceLog!]);
           }
           if (event.traceLogs?.length) {
-            setTraceLogs((prev) => [...prev, ...event.traceLogs!]);
+            setTraceLogs((prev) => {
+              const newLogs = [...prev];
+              for (const log of event.traceLogs!) {
+                if (!newLogs.some(l => l.stage === log.stage && l.critique === log.critique)) {
+                  newLogs.push(log);
+                }
+              }
+              return newLogs;
+            });
           }
           if (event.payload) {
             setBrandKitData((prev) => ({ ...prev, ...event.payload }));
@@ -88,7 +96,15 @@ export default function App() {
           setTraceLogs((prev) => [...prev, event.traceLog!]);
         }
         if (event.traceLogs?.length) {
-          setTraceLogs((prev) => [...prev, ...event.traceLogs!]);
+          setTraceLogs((prev) => {
+            const newLogs = [...prev];
+            for (const log of event.traceLogs!) {
+              if (!newLogs.some(l => l.stage === log.stage && l.critique === log.critique)) {
+                newLogs.push(log);
+              }
+            }
+            return newLogs;
+          });
         }
         if (event.payload) {
           setBrandKitData((prev) => ({ ...prev, ...event.payload }));

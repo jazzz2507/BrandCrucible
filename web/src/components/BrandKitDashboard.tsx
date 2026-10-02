@@ -1,5 +1,6 @@
 import React from 'react';
 import type { BrandKitData, ChallengerLog } from '../services/api';
+import { derivePaletteFromDirection, deriveTypographyFromDirection } from '../services/api';
 
 interface Props {
   data?: BrandKitData | null;
@@ -22,6 +23,9 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
   const score = data?.consistencyCheck?.overall_score;
   const isConsistent = data?.consistencyCheck?.is_consistent;
   const consistencySummary = data?.consistencyCheck?.summary;
+
+  const paletteSwatches = data?.palette || derivePaletteFromDirection(colDir);
+  const typographySwatches = data?.typography || deriveTypographyFromDirection(typDir);
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 relative z-10">
@@ -108,11 +112,7 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
                 Color Palette
               </h3>
               <div className="grid grid-cols-3 gap-3">
-                {(data?.palette || [
-                  { name: 'Primary Dark', hex: '#0B1020' },
-                  { name: 'Accent Teal', hex: '#00F0FF' },
-                  { name: 'Border Slate', hex: '#1E293B' },
-                ]).map((color, idx) => (
+                {paletteSwatches.map((color, idx) => (
                   <div key={idx} className="space-y-2">
                     <div
                       className="h-16 rounded-lg border border-white/20 ring-1 ring-white/5"
@@ -133,13 +133,13 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
                 <div>
                   <div className="text-[var(--color-muted)]">Header Font</div>
                   <div className="font-heading font-bold text-base text-white">
-                    {data?.typography?.headerFont || 'Space Grotesk'}
+                    {typographySwatches.headerFont}
                   </div>
                 </div>
                 <div>
                   <div className="text-[var(--color-muted)]">Body Font</div>
                   <div className="font-mono text-white">
-                    {data?.typography?.bodyFont || 'Inter / System Mono'}
+                    {typographySwatches.bodyFont}
                   </div>
                 </div>
               </div>

@@ -39,6 +39,74 @@ function stageIndexFor(stageId: string | undefined): number {
   return idx === -1 ? 0 : idx;
 }
 
+export function derivePaletteFromDirection(colorDirection?: string): Array<{ name: string; hex: string }> {
+  const text = (colorDirection || '').toLowerCase();
+  
+  if (text.includes('galvanized') || text.includes('steel') || text.includes('#4a5568')) {
+    return [
+      { name: 'Galvanized Steel', hex: '#4A5568' },
+      { name: 'Matte Black', hex: '#18181B' },
+      { name: 'Slate Grey', hex: '#334155' },
+    ];
+  } else if (text.includes('workbench') || text.includes('timber') || text.includes('brown') || text.includes('#6b4423')) {
+    return [
+      { name: 'Workbench Timber', hex: '#6B4423' },
+      { name: 'Raw Iron', hex: '#2D3748' },
+      { name: 'Kraft Paper', hex: '#E2E8F0' },
+    ];
+  } else if (text.includes('hazard') || text.includes('yellow') || text.includes('#facc15')) {
+    return [
+      { name: 'Hazard Yellow', hex: '#FACC15' },
+      { name: 'Asphalt Black', hex: '#111827' },
+      { name: 'Concrete Gray', hex: '#9CA3AF' },
+    ];
+  } else if (text.includes('navy') || text.includes('#1e3a8a')) {
+    return [
+      { name: 'Deep Navy', hex: '#1E3A8A' },
+      { name: 'Ocean Blue', hex: '#0EA5E9' },
+      { name: 'Foam White', hex: '#F0F9FF' },
+    ];
+  } else if (text.includes('forest') || text.includes('sage') || text.includes('#15803d')) {
+    return [
+      { name: 'Forest Green', hex: '#15803D' },
+      { name: 'Sage', hex: '#86EFAC' },
+      { name: 'Earth Brown', hex: '#78350F' },
+    ];
+  } else if (text.includes('cream') || text.includes('ivory') || text.includes('#f5f5f4')) {
+    return [
+      { name: 'Ivory', hex: '#F5F5F4' },
+      { name: 'Soft Gray', hex: '#D6D3D1' },
+      { name: 'Muted Taupe', hex: '#A8A29E' },
+    ];
+  } else if (text.includes('terracotta') || text.includes('ember') || text.includes('#f97316')) {
+    return [
+      { name: 'Terracotta', hex: '#F97316' },
+      { name: 'Charcoal', hex: '#1F2937' },
+      { name: 'Sand', hex: '#FDF6E3' },
+    ];
+  }
+
+  return [
+    { name: 'Obsidian Base', hex: '#121318' },
+    { name: 'Forge Ember', hex: '#FF6B2B' },
+    { name: 'Warm Stone', hex: '#2A2D37' },
+  ];
+}
+
+export function deriveTypographyFromDirection(typographyDirection?: string): { headerFont: string; bodyFont: string } {
+  const text = (typographyDirection || '').toLowerCase();
+  
+  if (text.includes('serif') && !text.includes('sans-serif')) {
+    return { headerFont: 'Merriweather', bodyFont: 'Georgia' };
+  } else if (text.includes('mono')) {
+    return { headerFont: 'Fira Code', bodyFont: 'Roboto Mono' };
+  } else if (text.includes('roboto') || text.includes('helvetica')) {
+    return { headerFont: 'Roboto', bodyFont: 'Open Sans' };
+  }
+  
+  return { headerFont: 'Space Grotesk', bodyFont: 'Inter' };
+}
+
 export async function startPipeline(idea: string): Promise<string> {
   const response = await fetch(`${API_BASE_URL}/api/interview/start`, {
     method: 'POST',
@@ -123,6 +191,25 @@ export function subscribeToPipelineStream(
     try {
       const data = e.data ? JSON.parse(e.data) : {};
       let payload: BrandKitData | undefined;
+      let traceLogs: ChallengerLog[] = [];
+      
+      if (Array.isArray(data.trace)) {
+        data.trace.forEach((entry: any) => {
+          if (entry.stage === 'Challenge' && entry.rawResponse) {
+            try {
+              const parsed = JSON.parse(entry.rawResponse);
+              if (parsed.item && parsed.verdict) {
+                traceLogs.push({
+                  stage: `Challenge (${parsed.item})`,
+                  critique: `${parsed.feedback} [verdict: ${parsed.verdict.toUpperCase()}]`,
+                  status: parsed.verdict === 'pass' ? 'approved' : 'rejected',
+                  timestamp: entry.timestamp || new Date().toISOString()
+                });
+              }
+            } catch (err) {}
+          }
+        });
+      }
       
       if (data.brandKit || data.consistencyCheck) {
         const out = data.brandKit || {};
@@ -140,6 +227,7 @@ export function subscribeToPipelineStream(
       onEvent({
         stageIndex: STAGE_IDS.length - 1,
         payload: payload || data.payload,
+        traceLogs: traceLogs.length > 0 ? traceLogs : undefined,
         isComplete: true,
       });
     } catch (err) {
