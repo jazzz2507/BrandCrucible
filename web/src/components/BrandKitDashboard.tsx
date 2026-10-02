@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import type { BrandKitData, ChallengerLog } from '../services/api';
 import { derivePaletteFromDirection, deriveTypographyFromDirection } from '../services/api';
 
@@ -8,6 +8,7 @@ interface Props {
 }
 
 export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => {
+  const [copied, setCopied] = useState(false);
   const brandName = data?.brandName || 'Crucible AI';
   const tagline = data?.tagline || 'Forging high-velocity brand identity from raw ideas.';
 
@@ -27,10 +28,62 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
   const paletteSwatches = data?.palette || derivePaletteFromDirection(colDir);
   const typographySwatches = data?.typography || deriveTypographyFromDirection(typDir);
 
+  const handleCopy = async () => {
+    if (!data) return;
+    const md = `# ${brandName}
+**Tagline:** ${tagline}
+
+## Positioning
+**Value Proposition:** ${valProp}
+**Positioning Statement:** ${posStatement}
+
+## Brand Shape
+**Personality Traits:** ${traits.join(', ')}
+**Voice Description:** ${voice}
+
+## Visual Identity
+**Color Direction:** ${colDir}
+**Palette:** ${paletteSwatches.map((p: any) => `${p.name} (${p.hex})`).join(', ')}
+**Typography:** ${typDir}
+
+## Consistency Check
+**Score:** ${score}/10
+**Summary:** ${consistencySummary}
+`;
+    await navigator.clipboard.writeText(md);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    if (!data) return;
+    const blob = new Blob([JSON.stringify({ brandKit: data, traceLogs }, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `brand-kit-${brandName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 relative z-10">
       {/* Header Banner */}
-      <div className="glass-panel p-6">
+      <div className="glass-panel p-6 relative">
+        <div className="absolute top-6 right-6 flex gap-2">
+          <button 
+            onClick={handleCopy}
+            className="px-3 py-1.5 text-xs font-medium bg-white/5 hover:bg-white/10 rounded transition-colors text-white"
+          >
+            {copied ? '✓ Copied!' : 'Copy Brand Kit'}
+          </button>
+          <button 
+            onClick={handleDownload}
+            className="px-3 py-1.5 text-xs font-medium bg-[var(--color-accent)]/20 hover:bg-[var(--color-accent)]/30 text-[var(--color-accent)] rounded transition-colors"
+          >
+            Download JSON
+          </button>
+        </div>
         <span className="text-xs font-semibold text-[var(--color-accent)] uppercase tracking-wider block mb-1">
           Generated Brand Kit
         </span>
@@ -150,14 +203,26 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
 
       {/* Challenger Audit Section */}
       {traceLogs.length > 0 && (
-        <div className="glass-panel p-6 space-y-3">
+        <div className="glass-panel p-6 space-y-4">
           <h2 className="text-sm font-semibold text-[var(--color-accent)] uppercase tracking-wider">
             Challenger Audit Summary
           </h2>
-          <div className="space-y-2 font-mono text-xs">
+          <div className="space-y-3">
             {traceLogs.map((log, idx) => (
-              <div key={idx} className="text-gray-300 border-b border-[var(--color-border)] pb-2 last:border-none">
-                <span className="font-bold text-white">[{log.stage}]</span>: {log.critique}
+              <div key={idx} className="bg-white/5 rounded-lg p-4 border border-white/10">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="inline-block bg-white/10 px-2 py-1 rounded text-white font-bold text-xs">
+                    {log.item || log.stage.replace(/^Challenge \(/, '').replace(/\)$/, '')}
+                  </div>
+                  <div className={`text-[10px] font-bold px-2 py-1 rounded uppercase ${
+                    log.verdict === 'reject' ? 'bg-[var(--color-danger)]/20 text-[var(--color-danger)]' :
+                    log.verdict === 'revise' ? 'bg-amber-500/20 text-amber-500' :
+                    'bg-[var(--color-success)]/20 text-[var(--color-success)]'
+                  }`}>
+                    {log.verdict === 'reject' ? 'REJECTED' : log.verdict === 'revise' ? 'REVISION REQUESTED' : 'APPROVED'}
+                  </div>
+                </div>
+                <p className="text-sm text-gray-300 leading-relaxed font-sans">{log.critique}</p>
               </div>
             ))}
           </div>

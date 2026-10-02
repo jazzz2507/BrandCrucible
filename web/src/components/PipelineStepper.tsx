@@ -7,7 +7,7 @@ export const STAGES = [
   { id: 'Visualize', name: '4. Visualize', desc: 'Palette & typography' },
   { id: 'Challenge', name: '5. Challenge', desc: 'Cliché review loop' },
   { id: 'Deliver', name: '6. Deliver', desc: 'Compile brand kit' },
-  { id: 'ConsistencyCheck', name: '7. ConsistencyCheck', desc: 'Coherence audit' },
+  { id: 'ConsistencyCheck', name: '7. Consistency Check', desc: 'Coherence audit' },
 ];
 
 interface Props {

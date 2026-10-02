@@ -5,6 +5,9 @@ export type ChallengerLog = {
   critique: string;
   status: 'approved' | 'rejected';
   timestamp: string;
+  item?: string;
+  itemType?: string;
+  verdict?: 'pass' | 'revise' | 'reject';
 };
 
 export type BrandKitData = {
@@ -42,55 +45,51 @@ function stageIndexFor(stageId: string | undefined): number {
 export function derivePaletteFromDirection(colorDirection?: string): Array<{ name: string; hex: string }> {
   const text = (colorDirection || '').toLowerCase();
   
-  if (text.includes('galvanized') || text.includes('steel') || text.includes('#4a5568')) {
-    return [
-      { name: 'Galvanized Steel', hex: '#4A5568' },
-      { name: 'Matte Black', hex: '#18181B' },
-      { name: 'Slate Grey', hex: '#334155' },
-    ];
-  } else if (text.includes('workbench') || text.includes('timber') || text.includes('brown') || text.includes('#6b4423')) {
-    return [
-      { name: 'Workbench Timber', hex: '#6B4423' },
-      { name: 'Raw Iron', hex: '#2D3748' },
-      { name: 'Kraft Paper', hex: '#E2E8F0' },
-    ];
-  } else if (text.includes('hazard') || text.includes('yellow') || text.includes('#facc15')) {
-    return [
-      { name: 'Hazard Yellow', hex: '#FACC15' },
-      { name: 'Asphalt Black', hex: '#111827' },
-      { name: 'Concrete Gray', hex: '#9CA3AF' },
-    ];
-  } else if (text.includes('navy') || text.includes('#1e3a8a')) {
-    return [
-      { name: 'Deep Navy', hex: '#1E3A8A' },
-      { name: 'Ocean Blue', hex: '#0EA5E9' },
-      { name: 'Foam White', hex: '#F0F9FF' },
-    ];
-  } else if (text.includes('forest') || text.includes('sage') || text.includes('#15803d')) {
-    return [
-      { name: 'Forest Green', hex: '#15803D' },
-      { name: 'Sage', hex: '#86EFAC' },
-      { name: 'Earth Brown', hex: '#78350F' },
-    ];
-  } else if (text.includes('cream') || text.includes('ivory') || text.includes('#f5f5f4')) {
-    return [
-      { name: 'Ivory', hex: '#F5F5F4' },
-      { name: 'Soft Gray', hex: '#D6D3D1' },
-      { name: 'Muted Taupe', hex: '#A8A29E' },
-    ];
-  } else if (text.includes('terracotta') || text.includes('ember') || text.includes('#f97316')) {
-    return [
-      { name: 'Terracotta', hex: '#F97316' },
-      { name: 'Charcoal', hex: '#1F2937' },
-      { name: 'Sand', hex: '#FDF6E3' },
-    ];
+  const rules = [
+    { match: ['galvanized steel', 'steel gray'], color: { name: 'Galvanized Steel', hex: '#4A5568' } },
+    { match: ['timber brown', 'workbench', 'wood'], color: { name: 'Workbench Timber', hex: '#7C4A27' } },
+    { match: ['hazard yellow', 'safety yellow', 'yellow'], color: { name: 'Hazard Yellow', hex: '#FACC15' } },
+    { match: ['terracotta', 'ember', 'rust'], color: { name: 'Forge Ember', hex: '#F97316' } },
+    { match: ['forest', 'sage', 'emerald', 'green'], color: { name: 'Forest Sage', hex: '#15803D' } },
+    { match: ['navy', 'cobalt', 'indigo'], color: { name: 'Deep Navy', hex: '#1E3A8A' } },
+    { match: ['cream', 'ivory', 'alabaster', 'sand'], color: { name: 'Warm Ivory', hex: '#F5F5F4' } },
+    { match: ['charcoal', 'obsidian', 'matte black'], color: { name: 'Matte Obsidian', hex: '#18181B' } },
+    { match: ['slate'], color: { name: 'Slate Grey', hex: '#334155' } },
+    { match: ['crimson', 'burgundy', 'coral'], color: { name: 'Crimson Clay', hex: '#DC2626' } },
+    { match: ['teal', 'cyan'], color: { name: 'Industrial Teal', hex: '#0D9488' } }
+  ];
+
+  const matchedColors: Array<{ name: string; hex: string }> = [];
+  
+  for (const rule of rules) {
+    if (rule.match.some(m => text.includes(m))) {
+      matchedColors.push(rule.color);
+    }
   }
 
-  return [
+  const hexMatches = text.match(/#[0-9A-Fa-f]{6}/g) || [];
+  for (const hex of hexMatches) {
+    if (!matchedColors.some(c => c.hex.toUpperCase() === hex.toUpperCase())) {
+      matchedColors.push({ name: `Hex ${hex.toUpperCase()}`, hex: hex.toUpperCase() });
+    }
+  }
+
+  // Deduplicate by hex
+  const uniqueColors = matchedColors.filter((c, index, self) =>
+    index === self.findIndex((t) => t.hex.toUpperCase() === c.hex.toUpperCase())
+  );
+
+  const defaults = [
     { name: 'Obsidian Base', hex: '#121318' },
     { name: 'Forge Ember', hex: '#FF6B2B' },
-    { name: 'Warm Stone', hex: '#2A2D37' },
+    { name: 'Warm Stone', hex: '#2A2D37' }
   ];
+
+  while (uniqueColors.length < 3) {
+    uniqueColors.push(defaults[uniqueColors.length]);
+  }
+
+  return uniqueColors.slice(0, 3);
 }
 
 export function deriveTypographyFromDirection(typographyDirection?: string): { headerFont: string; bodyFont: string } {
@@ -154,9 +153,12 @@ export function subscribeToPipelineStream(
           const h = item.history && item.history.length ? item.history[item.history.length - 1] : { feedback: item.feedback, verdict: item.verdict };
           return {
             stage: `Challenge (${item.type}: ${item.value || item.item || '?'})`,
-            critique: `${h.feedback || item.feedback} [verdict: ${(h.verdict || item.verdict || '').toUpperCase()}]`,
+            critique: h.feedback || item.feedback,
             status: (h.verdict || item.verdict) === 'pass' ? 'approved' : 'rejected',
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            item: item.value || item.item,
+            itemType: item.type,
+            verdict: (h.verdict || item.verdict)?.toLowerCase()
           } as ChallengerLog;
         });
       }
@@ -194,21 +196,27 @@ export function subscribeToPipelineStream(
       let traceLogs: ChallengerLog[] = [];
       
       if (Array.isArray(data.trace)) {
+        const itemMap = new Map<string, ChallengerLog>();
         data.trace.forEach((entry: any) => {
           if (entry.stage === 'Challenge' && entry.rawResponse) {
             try {
               const parsed = JSON.parse(entry.rawResponse);
               if (parsed.item && parsed.verdict) {
-                traceLogs.push({
+                const log = {
                   stage: `Challenge (${parsed.item})`,
-                  critique: `${parsed.feedback} [verdict: ${parsed.verdict.toUpperCase()}]`,
+                  critique: parsed.feedback,
                   status: parsed.verdict === 'pass' ? 'approved' : 'rejected',
-                  timestamp: entry.timestamp || new Date().toISOString()
-                });
+                  timestamp: entry.timestamp || new Date().toISOString(),
+                  item: parsed.item,
+                  itemType: parsed.type,
+                  verdict: parsed.verdict.toLowerCase()
+                } as ChallengerLog;
+                itemMap.set(parsed.item, log);
               }
             } catch (err) {}
           }
         });
+        traceLogs = Array.from(itemMap.values());
       }
       
       if (data.brandKit || data.consistencyCheck) {

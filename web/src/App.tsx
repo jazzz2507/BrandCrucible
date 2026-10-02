@@ -12,7 +12,28 @@ export default function App() {
   const [isSimulated, setIsSimulated] = useState(false);
   const [brandKitData, setBrandKitData] = useState<BrandKitData | null>(null);
   const [traceLogs, setTraceLogs] = useState<ChallengerLog[]>([]);
+  const [elapsedTime, setElapsedTime] = useState(0);
   const cleanupStreamRef = useRef<(() => void) | null>(null);
+
+  const STAGE_STATUS_MESSAGES = [
+    "Stage 1/7: Discovering audience & core problem...",
+    "Stage 2/7: Defining value proposition...",
+    "Stage 3/7: Shaping brand naming & personality...",
+    "Stage 4/7: Visualizing palette & typography...",
+    "Stage 5/7: Challenger Agent auditing brand names & taglines for clichés...",
+    "Stage 6/7: Compiling final brand kit...",
+    "Stage 7/7: Checking overall coherence and consistency..."
+  ];
+
+  useEffect(() => {
+    let timer: number | undefined;
+    if (viewState === 'running') {
+      timer = window.setInterval(() => {
+        setElapsedTime(prev => prev + 1);
+      }, 1000);
+    }
+    return () => clearInterval(timer);
+  }, [viewState]);
 
   const startSimulationMode = () => {
     setIsSimulated(true);
@@ -37,6 +58,7 @@ export default function App() {
     setViewState('running');
     setCurrentStageIndex(0);
     setTraceLogs([]);
+    setElapsedTime(0);
     setIsSimulated(false);
 
     try {
@@ -84,6 +106,7 @@ export default function App() {
     setViewState('running');
     setCurrentStageIndex(0);
     setTraceLogs([]);
+    setElapsedTime(0);
     setIsSimulated(false);
 
     cleanupStreamRef.current = subscribeToPipelineStream(
@@ -172,8 +195,21 @@ export default function App() {
         <div className="space-y-6">
           <PipelineStepper currentStageIndex={currentStageIndex} />
           <ChallengerTrace logs={traceLogs} />
-          <div className="text-center font-mono text-xs text-[var(--color-muted)] animate-pulse">
-            Processing stage through multi-agent engine...
+          
+          <div className="glass-panel p-4 text-center max-w-4xl mx-auto relative z-10">
+            <div className="font-mono text-xs text-[var(--color-accent)] animate-pulse mb-2">
+              {String(Math.floor(elapsedTime / 60)).padStart(2, '0')}:{String(elapsedTime % 60).padStart(2, '0')}
+            </div>
+            <div className="font-sans text-sm text-white font-medium">
+              {STAGE_STATUS_MESSAGES[Math.min(currentStageIndex, STAGE_STATUS_MESSAGES.length - 1)]}
+            </div>
+            {currentStageIndex > 0 && (
+              <div className="mt-3 text-[10px] text-[var(--color-muted)] flex flex-wrap gap-2 justify-center">
+                {STAGES.slice(0, currentStageIndex).map((s) => (
+                  <span key={s.id} className="bg-white/5 px-2 py-1 rounded">✓ {s.name}</span>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

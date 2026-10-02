@@ -432,7 +432,7 @@ async def run_pipeline_task(session_id: str):
                 })
                 
                 if is_golden:
-                    await asyncio.sleep(0.4)
+                    await asyncio.sleep(0.08)
                     output = session.stage_outputs.get(stage, {})
                 else:
                     output = await run_stage(stage, session)
