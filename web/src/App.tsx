@@ -169,7 +169,7 @@ export default function App() {
     <main className="min-h-screen relative p-6">
       <div className="atmospheric-bg"></div>
       <div className="atmospheric-grid"></div>
-      <header className="max-w-4xl mx-auto flex justify-between items-center pb-6 border-b border-[var(--color-border)] mb-8 relative z-10">
+      <header className="max-w-4xl mx-auto relative flex items-center justify-center pb-6 border-b border-[var(--color-border)] mb-8 z-10">
         <div className="flex items-center gap-2">
           <div className="h-3 w-3 rounded-full bg-[var(--color-accent)]" />
           <span className="font-heading font-bold text-white text-lg">BrandCrucible</span>
@@ -182,7 +182,7 @@ export default function App() {
         {viewState !== 'intake' && (
           <button
             onClick={() => setViewState('intake')}
-            className="text-xs text-[var(--color-muted)] hover:text-white transition-colors cursor-pointer"
+            className="absolute right-0 text-xs text-[var(--color-muted)] hover:text-white transition-colors cursor-pointer"
           >
             ← Back to Input
           </button>
