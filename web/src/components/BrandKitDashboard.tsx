@@ -24,9 +24,9 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
   const consistencySummary = data?.consistencyCheck?.summary;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-8">
+    <div className="max-w-4xl mx-auto space-y-8 relative z-10">
       {/* Header Banner */}
-      <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl">
+      <div className="glass-panel p-6">
         <span className="text-xs font-semibold text-[var(--color-accent)] uppercase tracking-wider block mb-1">
           Generated Brand Kit
         </span>
@@ -35,7 +35,7 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
 
         {score !== undefined && (
           <div className="mt-4 flex items-center gap-3 border-t border-[var(--color-border)] pt-4">
-             <div className={`px-2 py-1 rounded text-xs font-bold ${isConsistent ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+             <div className={`px-2 py-1 rounded text-xs font-bold ${isConsistent ? 'bg-[var(--color-success)]/20 text-[var(--color-success)]' : 'bg-[var(--color-danger)]/20 text-[var(--color-danger)]'}`}>
                 Coherence: {score}/10
              </div>
              <p className="text-xs text-[var(--color-muted)]">{consistencySummary}</p>
@@ -45,7 +45,7 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Positioning */}
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl space-y-4">
+        <div className="glass-panel p-6 space-y-4">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
             Positioning
           </h2>
@@ -62,7 +62,7 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
         </div>
 
         {/* Brand Shape */}
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl space-y-4">
+        <div className="glass-panel p-6 space-y-4">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
             Brand Shape
           </h2>
@@ -83,11 +83,11 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
         </div>
 
         {/* Visual Identity */}
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl space-y-4 md:col-span-2">
+        <div className="glass-panel p-6 space-y-4 md:col-span-2">
           <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
             Visual Direction
           </h2>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs mb-6">
             <div>
               <div className="text-[var(--color-muted)]">Colors</div>
               <div className="text-white mt-1">{colDir}</div>
@@ -101,12 +101,56 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
               <div className="text-white mt-1">{imgDir}</div>
             </div>
           </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-[var(--color-border)]">
+            <div>
+              <h3 className="text-xs font-semibold text-[var(--color-muted)] uppercase tracking-wider mb-3">
+                Color Palette
+              </h3>
+              <div className="grid grid-cols-3 gap-3">
+                {(data?.palette || [
+                  { name: 'Primary Dark', hex: '#0B1020' },
+                  { name: 'Accent Teal', hex: '#00F0FF' },
+                  { name: 'Border Slate', hex: '#1E293B' },
+                ]).map((color, idx) => (
+                  <div key={idx} className="space-y-2">
+                    <div
+                      className="h-16 rounded-lg border border-white/20 ring-1 ring-white/5"
+                      style={{ backgroundColor: color.hex }}
+                    />
+                    <div className="text-[10px] font-mono text-white font-medium truncate">{color.name}</div>
+                    <div className="text-[10px] font-mono text-[var(--color-muted)]">{color.hex}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <div>
+              <h3 className="text-xs font-semibold text-[var(--color-muted)] uppercase tracking-wider mb-3">
+                Typography
+              </h3>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <div className="text-[var(--color-muted)]">Header Font</div>
+                  <div className="font-heading font-bold text-base text-white">
+                    {data?.typography?.headerFont || 'Space Grotesk'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[var(--color-muted)]">Body Font</div>
+                  <div className="font-mono text-white">
+                    {data?.typography?.bodyFont || 'Inter / System Mono'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
       {/* Challenger Audit Section */}
       {traceLogs.length > 0 && (
-        <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl space-y-3">
+        <div className="glass-panel p-6 space-y-3">
           <h2 className="text-sm font-semibold text-[var(--color-accent)] uppercase tracking-wider">
             Challenger Audit Summary
           </h2>

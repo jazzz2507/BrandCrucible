@@ -16,7 +16,7 @@ interface Props {
 
 export const PipelineStepper: React.FC<Props> = ({ currentStageIndex }) => {
   return (
-    <div className="bg-[var(--color-surface)] border border-[var(--color-border)] p-6 rounded-xl max-w-4xl mx-auto mb-8">
+    <div className="glass-panel p-6 max-w-4xl mx-auto mb-8 relative z-10">
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-xs font-semibold text-[var(--color-accent)] uppercase tracking-wider">
           Multi-Agent Execution Pipeline
@@ -36,10 +36,10 @@ export const PipelineStepper: React.FC<Props> = ({ currentStageIndex }) => {
               key={stage.id}
               className={`p-3 rounded-lg border text-xs transition-all ${
                 isActive
-                  ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-white font-semibold animate-pulse'
+                  ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-white font-semibold shadow-[0_0_15px_rgba(255,106,61,0.2)] relative z-10 before:absolute before:inset-0 before:rounded-lg before:ring-1 before:ring-[var(--color-accent)] before:animate-pulse'
                   : isComplete
-                  ? 'border-[var(--color-success)]/40 bg-[var(--color-success)]/5 text-[var(--color-success)]'
-                  : 'border-[var(--color-border)] text-[var(--color-muted)] opacity-60'
+                  ? 'border-[var(--color-success)]/30 bg-[var(--color-success)]/10 text-[var(--color-success)]'
+                  : 'border-[var(--color-border)] text-[var(--color-muted)] opacity-70'
               }`}
             >
               <div className="font-bold">{stage.name}</div>
