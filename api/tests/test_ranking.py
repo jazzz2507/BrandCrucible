@@ -99,3 +99,46 @@ def test_empty_list_falls_back_to_first_shape_candidate():
     ranked_names = [{"value": "RankedWinner"}]
     chosen_from_ranked = select_candidate(ranked_names, fallback_names, fallback_key="name")
     assert chosen_from_ranked == "RankedWinner"
+
+def test_clean_pass_strictly_prioritized_over_mild_revision():
+    # Clean pass with zero revision remarks beats a candidate that received mild revision remarks,
+    # even if the candidate with revision remarks has a higher mean score.
+    clean_pass_item = {
+        "value": "CleanPassCandidate",
+        "verdict": "pass",
+        "scores": {"cliche_risk": 7.5, "distinctiveness": 7.5, "audience_fit": 7.5, "consistency_with_positioning": 7.5},  # mean 7.5
+        "feedback": "Outstanding, direct, and zero clichés found.",
+        "history": [{"item": "CleanPassCandidate", "verdict": "pass"}]
+    }
+    mild_revision_item = {
+        "value": "MildRevisionCandidate",
+        "verdict": "pass",
+        "scores": {"cliche_risk": 8.5, "distinctiveness": 8.5, "audience_fit": 8.5, "consistency_with_positioning": 8.5},  # mean 8.5
+        "feedback": "Strong concept, though minor revision suggested for the metaphor.",
+        "history": [{"item": "MildRevisionCandidate", "verdict": "pass"}]
+    }
+    ranked = rank_by_score([mild_revision_item, clean_pass_item])
+    assert ranked[0]["value"] == "CleanPassCandidate"
+    assert ranked[1]["value"] == "MildRevisionCandidate"
+
+def test_clean_pass_prioritized_over_multi_attempt_revision():
+    # An item that required revision attempts ranks below an item with a clean first-try pass.
+    clean_first_try = {
+        "value": "CleanFirstTry",
+        "verdict": "pass",
+        "scores": {"cliche_risk": 7.8, "distinctiveness": 7.8, "audience_fit": 7.8, "consistency_with_positioning": 7.8},
+        "history": [{"item": "CleanFirstTry", "verdict": "pass"}]
+    }
+    multi_attempt = {
+        "value": "MultiAttempt",
+        "verdict": "pass",
+        "scores": {"cliche_risk": 8.5, "distinctiveness": 8.5, "audience_fit": 8.5, "consistency_with_positioning": 8.5},
+        "history": [
+            {"item": "InitialFailed", "verdict": "revise"},
+            {"item": "MultiAttempt", "verdict": "pass"}
+        ]
+    }
+    ranked = rank_by_score([multi_attempt, clean_first_try])
+    assert ranked[0]["value"] == "CleanFirstTry"
+    assert ranked[1]["value"] == "MultiAttempt"
+

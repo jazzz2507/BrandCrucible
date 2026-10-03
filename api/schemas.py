@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, AliasChoices
 from typing import List, Literal, Optional
 
 class Audience(BaseModel):
@@ -48,10 +48,10 @@ class ChallengeScores(BaseModel):
     consistency_with_positioning: float
 
 class ChallengeSchema(BaseModel):
-    item: str
+    item: str = Field(validation_alias=AliasChoices('item', 'target', 'candidate'))
     scores: ChallengeScores
     verdict: Literal['pass', 'revise', 'reject']
-    feedback: str
+    feedback: str = Field(validation_alias=AliasChoices('feedback', 'explanation', 'critique'))
 
 class DeliverDiscovery(BaseModel):
     audience: Audience

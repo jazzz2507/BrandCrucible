@@ -14,6 +14,7 @@ from collections import defaultdict
 from contextlib import asynccontextmanager
 
 import re
+import difflib
 from store import store
 from llm import call_stage_llm, LLMError
 from schemas import (
@@ -167,7 +168,7 @@ prompts = {
     "Position": "You are the Position agent. Define a clear value proposition, differentiators, competitive angle, and positioning statement using the idea and discovery context. This stage is strategic positioning only: do not generate names, taglines, personality, voice, or visual directions. Be specific to this idea and audience, avoiding generic claims. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nDiscovery: {discovery}",
     "Shape": "You are the Shape agent. Create candidate brand names with rationale and risk, personality traits, tagline options, and a concise voice description using the positioning context. This stage handles verbal identity only: do not revisit discovery, rewrite positioning, or suggest colors, typography, or imagery. Make ideas memorable and specific to this startup, not generic. If revision guidance is supplied, address it directly. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\n{revision_guidance}",
     "Visualize": "You are the Visualize agent. Propose a cohesive color, typography, and imagery direction, with rationale grounded in the brand strategy and personality. In color_direction, explicitly define the palette naming 3 core brand colors (Primary, Secondary, Accent) alongside their exact 6-digit hex codes (e.g. 'Primary: Electric Lime (#39FF14), Secondary: Obsidian Slate (#18181B), Accent: Warm Alabaster (#F4F4F5)'). In palette, provide the corresponding 3 items with exact 'name' and 'hex' matching the color_direction prose so they are strictly bound. This stage is visual direction only: do not invent names, taglines, or revise the positioning. Be concrete and specific to this brand rather than relying on generic design adjectives. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\nShape: {shape}",
-    "Challenge": "You are the Challenge agent. Critically assess one supplied brand item against its positioning context. Score cliche risk, distinctiveness, audience fit, and consistency with positioning from 0 to 10; for cliche risk, a higher score means lower risk / more original. Give actionable feedback and a pass, revise, or reject verdict. Do not generate a replacement or change the strategy. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nItem: {item}\nPositioning: {positioning}",
+    "Challenge": "You are the Challenge agent. Critically assess one supplied brand item against its positioning context. The candidate item to evaluate is: '{item}'. The 'item' (target/candidate) field in your output MUST be copied verbatim (exact character match) from this supplied item string, and your 'feedback' / explanation text must critique that exact candidate string without inventing, substituting, or hallucinating a different name or tagline. Score cliche risk, distinctiveness, audience fit, and consistency with positioning from 0 to 10; for cliche risk, a higher score means lower risk / more original. Give actionable feedback and a pass, revise, or reject verdict. Do not generate a replacement or change the strategy. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nItem: {item}\nPositioning: {positioning}",
     "Deliver": "You are the Deliver agent. Compile the validated prior-stage decisions into one clean, exportable brand kit using the supplied chosen name, tagline, discovery, positioning, verbal identity, and visual direction. This stage compiles only: do not invent missing strategy or add new creative directions. Keep every field specific and faithful to supplied outputs. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nName: {name}\nTagline: {tagline}\nDiscovery: {discovery}\nPositioning: {positioning}\nShape: {shape}\nVisual: {visual}",
     "ConsistencyCheck": "You are the Consistency Check agent. Critically evaluate the final compiled brand kit as a whole against the original idea and prior stage decisions. Check specifically:\n1. Does the final brand name match the original idea?\n2. Does the tagline directly support the positioning?\n3. Do the brand personality traits match the discovered audience and problem?\n4. Does the visual identity fit the brand personality and positioning?\n5. Is there overall coherence across name, tagline, positioning, voice, and visual identity?\n6. Has the brand drifted from the core problem and audience of the original idea?\n\nEvaluate issues (if any) with area, description, and severity (\"minor\" | \"major\"). Provide an overall_score from 0 to 10, a boolean is_consistent (true if score >= 7 and no unaddressed major disconnects), and a concise summary (one or two sentences). Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nBrand Kit: {brand_kit}"
 }
@@ -190,9 +191,31 @@ def needs_revision(result: ChallengeSchema) -> bool:
     avg = average(scores)
     return avg < 6.0 or any(v < 4.0 for v in scores.values()) or result.verdict != 'pass'
 
+def is_clean_pass(item: Dict[str, Any]) -> bool:
+    if item.get("verdict") != "pass":
+        return False
+    # If it underwent revision cycles or had revise in history
+    history = item.get("history", [])
+    if len(history) > 1:
+        return False
+    if any(h.get("verdict") in ("revise", "reject") for h in history):
+        return False
+    if item.get("has_revision_remarks"):
+        return False
+    # Check feedback text for mild revision remarks
+    feedback = (item.get("feedback") or "").lower()
+    revision_cues = [
+        "minor revision", "mild revision", "slight revision", "needs revision",
+        "suggest revision", "consider revising", "revise to", "recommend revision",
+        "requires revision", "needs a slight", "needs minor", "small tweak", "minor tweak"
+    ]
+    if any(cue in feedback for cue in revision_cues):
+        return False
+    return True
+
 def rank_by_score(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     def mean(scores):
-        if not scores: return -1
+        if not scores: return -1.0
         return sum(scores.values()) / len(scores)
         
     def cmp(a, b):
@@ -200,10 +223,74 @@ def rank_by_score(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         is_pass_b = 1 if b.get("verdict") == 'pass' else 0
         if is_pass_a != is_pass_b:
             return is_pass_b - is_pass_a
-        return mean(b.get("scores", {})) - mean(a.get("scores", {}))
+            
+        # Tie-breaker / prioritization: clean pass with zero revision remarks beats one with revision remarks
+        clean_a = 1 if is_clean_pass(a) else 0
+        clean_b = 1 if is_clean_pass(b) else 0
+        if clean_a != clean_b:
+            return clean_b - clean_a
+            
+        mean_a = mean(a.get("scores", {}))
+        mean_b = mean(b.get("scores", {}))
+        if mean_a != mean_b:
+            return 1 if mean_b > mean_a else -1
+            
+        return 0
 
     import functools
     return sorted(items, key=functools.cmp_to_key(cmp))
+
+def match_candidate_name(
+    target_name: str,
+    feedback: str,
+    all_candidates: Optional[List[str]] = None
+) -> str:
+    """
+    Reconciles candidate name against candidates list and feedback text.
+    If the explanation explicitly quotes or references a different candidate name
+    from the candidate list, reconcile the card label to match the quoted name.
+    Matches candidates by exact name or normalized string similarity.
+    """
+    if not all_candidates:
+        return target_name.strip()
+
+    target_clean = target_name.strip().strip("'\"`")
+    feedback_lower = feedback.lower() if feedback else ""
+
+    # 1. If explanation explicitly quotes a candidate name from all_candidates:
+    quoted_candidates = []
+    for cand in all_candidates:
+        cand_clean = cand.strip().strip("'\"`")
+        pattern = rf'[\'"`]{re.escape(cand_clean.lower())}[\'"`]'
+        match = re.search(pattern, feedback_lower)
+        if match:
+            quoted_candidates.append((match.start(), cand_clean))
+
+    if quoted_candidates:
+        quoted_candidates.sort(key=lambda x: x[0])
+        earliest_quoted = quoted_candidates[0][1]
+        if target_clean.lower() not in feedback_lower or quoted_candidates[0][0] <= 15:
+            return earliest_quoted
+
+    # 2. Check if feedback begins with another candidate name:
+    for cand in all_candidates:
+        cand_clean = cand.strip().strip("'\"`")
+        pattern = rf'^\s*(?:the\s+)?(?:name|tagline)?\s*[\'"`]?{re.escape(cand_clean.lower())}[\'"`]?'
+        if re.search(pattern, feedback_lower):
+            if target_clean.lower() not in feedback_lower:
+                return cand_clean
+
+    # 3. Check exact matches (case-insensitive)
+    for cand in all_candidates:
+        if cand.strip().strip("'\"`").lower() == target_clean.lower():
+            return cand.strip().strip("'\"`")
+
+    # 4. Normalized string similarity match
+    close_matches = difflib.get_close_matches(target_clean, all_candidates, n=1, cutoff=0.6)
+    if close_matches:
+        return close_matches[0].strip().strip("'\"`")
+
+    return target_clean
 
 def select_candidate(ranked_items: List[Dict[str, Any]], fallback_candidates: List[Any], fallback_key: str = "name") -> str:
     if ranked_items:
@@ -226,7 +313,8 @@ async def run_challenger_item(
     positioning: str,
     session: Optional[BaseModel] = None,
     call_llm_fn=None,
-    sleep_fn=None
+    sleep_fn=None,
+    all_candidates: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     if call_llm_fn is None:
         call_llm_fn = call_stage_llm
@@ -241,14 +329,17 @@ async def run_challenger_item(
         prompt = prompts["Challenge"].format(item=item_val, positioning=positioning)
         res = await call_llm_fn("Challenge", prompt, ChallengeSchema, session)
         
+        reconciled_val = match_candidate_name(res.item or item_val, res.feedback, all_candidates)
+        
         res_dump = res.model_dump()
+        res_dump["item"] = reconciled_val
         history.append(res_dump)
         
         scores_dump = res.scores.model_dump()
         current_avg = average(scores_dump)
         
         if best is None or current_avg > average(best["result"]["scores"]):
-            best = {"value": item_val, "result": res_dump, "attempt": revision}
+            best = {"value": reconciled_val, "result": res_dump, "attempt": revision}
             
         if not needs_revision(res):
             break
@@ -262,6 +353,8 @@ async def run_challenger_item(
                 item_val = new_shape.candidates[0].name
             else:
                 item_val = new_shape.tagline_options[0]
+            if all_candidates is not None and item_val not in all_candidates:
+                all_candidates.append(item_val)
             await sleep_fn(4.5)
         revision += 1
         
@@ -273,6 +366,8 @@ async def run_challenger_item(
     final_verdict = 'revise' if needs_revision(best_res) else 'pass'
     best["result"]["verdict"] = final_verdict
     
+    had_revision = len(history) > 1 or any(h.get("verdict") in ("revise", "reject") for h in history)
+    
     return {
         "type": cand["type"],
         "value": best["value"],
@@ -280,7 +375,8 @@ async def run_challenger_item(
         "verdict": final_verdict,
         "feedback": best["result"]["feedback"],
         "history": history,
-        "exhausted_revisions": exhausted
+        "exhausted_revisions": exhausted,
+        "has_revision_remarks": had_revision
     }
 
 def extract_palette_from_prose(color_direction: str) -> List[Dict[str, str]]:
@@ -448,14 +544,24 @@ async def run_stage(stage: str, session: BaseModel):
         positioning = json.dumps(session.stage_outputs.get("Position", {}))
         shape_output = session.stage_outputs.get("Shape", {})
         
+        candidate_names = [c["name"] for c in shape_output.get("candidates", []) if "name" in c]
+        candidate_taglines = [t for t in shape_output.get("tagline_options", [])]
+        
         candidates = []
-        for c in shape_output.get("candidates", []):
-            candidates.append({"type": "name", "value": c["name"]})
-        for t in shape_output.get("tagline_options", []):
-            candidates.append({"type": "tagline", "value": t})
+        for name in candidate_names:
+            candidates.append({"type": "name", "value": name})
+        for tag in candidate_taglines:
+            candidates.append({"type": "tagline", "value": tag})
+            
         challenge_results = []
+        seen_values = set()
         for cand in candidates:
-            res_item = await run_challenger_item(cand, idea, positioning, session)
+            pool = list(candidate_names if cand["type"] == "name" else candidate_taglines)
+            res_item = await run_challenger_item(cand, idea, positioning, session, all_candidates=pool)
+            val_norm = res_item["value"].strip().lower()
+            if val_norm in seen_values:
+                continue
+            seen_values.add(val_norm)
             challenge_results.append(res_item)
             await asyncio.sleep(4.5)
             

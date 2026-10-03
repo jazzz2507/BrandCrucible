@@ -140,3 +140,71 @@ async def test_challenger_history_is_recorded():
     assert res["history"][1]["feedback"] == "Feedback 1"
     assert res["history"][2]["item"] == "Name_2"
     assert res["history"][2]["feedback"] == "Feedback 2"
+
+@pytest.mark.asyncio
+async def test_challenger_reconciles_card_label_when_critique_quotes_different_candidate():
+    all_candidates = ["Verdant Armor", "Botanical Shield", "Terra Guard"]
+
+    async def fake_llm(stage, prompt, schema, session=None):
+        if stage == "Challenge":
+            return make_challenge_result(
+                "Verdant Armor",
+                8.0,
+                verdict="pass",
+                feedback="The candidate 'Botanical Shield' leans heavily into protective metaphors and works well."
+            )
+        raise RuntimeError("Unexpected stage")
+
+    cand = {"type": "name", "value": "Verdant Armor"}
+    res = await run_challenger_item(
+        cand,
+        idea="Eco packaging",
+        positioning="Positioning",
+        call_llm_fn=fake_llm,
+        all_candidates=all_candidates
+    )
+
+    assert res["value"] == "Botanical Shield"
+    assert res["history"][0]["item"] == "Botanical Shield"
+
+@pytest.mark.asyncio
+async def test_challenger_reconciles_close_match_spelling():
+    all_candidates = ["Verdant Armor", "Botanical Shield", "Terra Guard"]
+
+    async def fake_llm(stage, prompt, schema, session=None):
+        if stage == "Challenge":
+            return make_challenge_result(
+                "Verdant Armour",
+                8.5,
+                verdict="pass",
+                feedback="Verdant Armour sounds grounded and distinct."
+            )
+        raise RuntimeError("Unexpected stage")
+
+    cand = {"type": "name", "value": "Verdant Armor"}
+    res = await run_challenger_item(
+        cand,
+        idea="Eco packaging",
+        positioning="Positioning",
+        call_llm_fn=fake_llm,
+        all_candidates=all_candidates
+    )
+
+    assert res["value"] == "Verdant Armor"
+
+def test_challenge_schema_aliases():
+    payload = {
+        "target": "AliasCandidate",
+        "scores": {
+            "cliche_risk": 8.0,
+            "distinctiveness": 8.0,
+            "audience_fit": 8.0,
+            "consistency_with_positioning": 8.0
+        },
+        "verdict": "pass",
+        "explanation": "Valid critique via explanation alias"
+    }
+    schema = ChallengeSchema.model_validate(payload)
+    assert schema.item == "AliasCandidate"
+    assert schema.feedback == "Valid critique via explanation alias"
+

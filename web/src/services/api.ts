@@ -204,15 +204,30 @@ export function subscribeToPipelineStream(
 
       if (data.stage === 'Challenge' && Array.isArray(data.output?.items)) {
         traceLogs = data.output.items.map((item: any) => {
-          const h = item.history && item.history.length ? item.history[item.history.length - 1] : { feedback: item.feedback, verdict: item.verdict };
+          const matchingHistory = item.history?.find((h: any) =>
+            (h.item && item.value && h.item.toLowerCase() === item.value.toLowerCase()) ||
+            (h.target && item.value && h.target.toLowerCase() === item.value.toLowerCase()) ||
+            (h.candidate && item.value && h.candidate.toLowerCase() === item.value.toLowerCase())
+          );
+          const critiqueText = item.feedback || matchingHistory?.feedback || matchingHistory?.explanation || (item.history?.length ? item.history[item.history.length - 1].feedback : '');
+          const verdictVal = item.verdict || matchingHistory?.verdict || (item.history?.length ? item.history[item.history.length - 1].verdict : 'pass');
+          
+          let cardLabel = item.value || item.item || item.target || item.candidate || matchingHistory?.item || '?';
+          
+          // Reconcile card label if critique explicitly quotes a candidate name
+          const quoteMatch = critiqueText.match(/['"`]([^'"`]{2,40})['"`]/);
+          if (quoteMatch && quoteMatch[1] && !critiqueText.toLowerCase().includes(cardLabel.toLowerCase())) {
+            cardLabel = quoteMatch[1];
+          }
+
           return {
-            stage: `Challenge (${item.type}: ${item.value || item.item || '?'})`,
-            critique: h.feedback || item.feedback,
-            status: (h.verdict || item.verdict) === 'pass' ? 'approved' : 'rejected',
+            stage: `Challenge (${item.type || 'audit'}: ${cardLabel})`,
+            critique: critiqueText,
+            status: verdictVal === 'pass' ? 'approved' : 'rejected',
             timestamp: new Date().toISOString(),
-            item: item.value || item.item,
+            item: cardLabel,
             itemType: item.type,
-            verdict: (h.verdict || item.verdict)?.toLowerCase()
+            verdict: verdictVal?.toLowerCase()
           } as ChallengerLog;
         });
       }
@@ -278,17 +293,24 @@ export function subscribeToPipelineStream(
           if (entry.stage === 'Challenge' && entry.rawResponse) {
             try {
               const parsed = JSON.parse(entry.rawResponse);
-              if (parsed.item && parsed.verdict) {
+              const itemName = parsed.item || parsed.target || parsed.candidate;
+              const critiqueText = parsed.feedback || parsed.explanation || parsed.critique;
+              if (itemName && parsed.verdict) {
+                let cardLabel = itemName;
+                const quoteMatch = critiqueText?.match(/['"`]([^'"`]{2,40})['"`]/);
+                if (quoteMatch && quoteMatch[1] && !critiqueText.toLowerCase().includes(cardLabel.toLowerCase())) {
+                  cardLabel = quoteMatch[1];
+                }
                 const log = {
-                  stage: `Challenge (${parsed.item})`,
-                  critique: parsed.feedback,
+                  stage: `Challenge (${cardLabel})`,
+                  critique: critiqueText,
                   status: parsed.verdict === 'pass' ? 'approved' : 'rejected',
                   timestamp: entry.timestamp || new Date().toISOString(),
-                  item: parsed.item,
+                  item: cardLabel,
                   itemType: parsed.type,
                   verdict: parsed.verdict.toLowerCase()
                 } as ChallengerLog;
-                itemMap.set(parsed.item, log);
+                itemMap.set(cardLabel, log);
               }
             } catch (err) {}
           }
