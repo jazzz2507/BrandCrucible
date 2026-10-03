@@ -168,29 +168,35 @@ async def test_challenger_reconciles_card_label_when_critique_quotes_different_c
     assert res["history"][0]["item"] == "Botanical Shield"
 
 @pytest.mark.asyncio
-async def test_challenger_reconciles_close_match_spelling():
-    all_candidates = ["Verdant Armor", "Botanical Shield", "Terra Guard"]
+async def test_challenger_tagline_revision_loop():
+    current_attempt = 0
 
     async def fake_llm(stage, prompt, schema, session=None):
+        nonlocal current_attempt
         if stage == "Challenge":
-            return make_challenge_result(
-                "Verdant Armour",
-                8.5,
-                verdict="pass",
-                feedback="Verdant Armour sounds grounded and distinct."
+            idx = current_attempt
+            current_attempt += 1
+            if idx == 0:
+                return make_challenge_result("Tagline 1", 4.0, verdict="revise", feedback="Too generic.")
+            elif idx == 1:
+                # LLM hallucinates a quote
+                return make_challenge_result("Tagline 2", 8.0, verdict="pass", feedback="I love the tagline 'Better Tagline'.")
+        elif stage == "Shape":
+            return ShapeSchema(
+                candidates=[],
+                personality_traits=[],
+                tagline_options=["Tagline 2"],
+                voice_description="Direct"
             )
-        raise RuntimeError("Unexpected stage")
 
-    cand = {"type": "name", "value": "Verdant Armor"}
-    res = await run_challenger_item(
-        cand,
-        idea="Eco packaging",
-        positioning="Positioning",
-        call_llm_fn=fake_llm,
-        all_candidates=all_candidates
-    )
+    cand = {"type": "tagline", "value": "Tagline 1"}
+    res = await run_challenger_item(cand, idea="startup", positioning="pos", call_llm_fn=fake_llm, all_candidates=["Tagline 1"])
 
-    assert res["value"] == "Verdant Armor"
+    assert len(res["history"]) == 2
+    assert res["history"][0]["item"] == "Tagline 1"
+    # The second attempt should use the quoted override because "Tagline 2" wasn't in the feedback text
+    assert res["history"][1]["item"] == "Better Tagline"
+    assert res["value"] == "Better Tagline"
 
 def test_challenge_schema_aliases():
     payload = {

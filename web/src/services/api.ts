@@ -203,33 +203,26 @@ export function subscribeToPipelineStream(
       let payload: BrandKitData | undefined;
 
       if (data.stage === 'Challenge' && Array.isArray(data.output?.items)) {
-        traceLogs = data.output.items.map((item: any) => {
-          const matchingHistory = item.history?.find((h: any) =>
-            (h.item && item.value && h.item.toLowerCase() === item.value.toLowerCase()) ||
-            (h.target && item.value && h.target.toLowerCase() === item.value.toLowerCase()) ||
-            (h.candidate && item.value && h.candidate.toLowerCase() === item.value.toLowerCase())
-          );
-          const critiqueText = item.feedback || matchingHistory?.feedback || matchingHistory?.explanation || (item.history?.length ? item.history[item.history.length - 1].feedback : '');
-          const verdictVal = item.verdict || matchingHistory?.verdict || (item.history?.length ? item.history[item.history.length - 1].verdict : 'pass');
-          
-          let cardLabel = item.value || item.item || item.target || item.candidate || matchingHistory?.item || '?';
-          
-          // Reconcile card label if critique explicitly quotes a candidate name
-          const quoteMatch = critiqueText.match(/['"`]([^'"`]{2,40})['"`]/);
-          if (quoteMatch && quoteMatch[1] && !critiqueText.toLowerCase().includes(cardLabel.toLowerCase())) {
-            cardLabel = quoteMatch[1];
-          }
+        traceLogs = data.output.items.flatMap((item: any) => {
+          return (item.history || []).map((h: any) => {
+            const cardLabel = h.item || h.candidate || h.target || h.name || h.value || '';
+            const critiqueText = h.feedback || h.explanation || h.critique || '';
+            const verdictVal = h.verdict || 'pass';
 
-          return {
-            stage: `Challenge (${item.type || 'audit'}: ${cardLabel})`,
-            critique: critiqueText,
-            status: verdictVal === 'pass' ? 'approved' : 'rejected',
-            timestamp: new Date().toISOString(),
-            item: cardLabel,
-            itemType: item.type,
-            verdict: verdictVal?.toLowerCase()
-          } as ChallengerLog;
-        }).filter((log: ChallengerLog) => log.item && log.item.trim() !== '' && log.item !== '?');
+            return {
+              stage: `Challenge (${item.type || 'audit'}: ${cardLabel})`,
+              critique: critiqueText,
+              status: verdictVal === 'pass' ? 'approved' : 'rejected',
+              timestamp: new Date().toISOString(),
+              item: cardLabel,
+              itemType: item.type,
+              verdict: verdictVal?.toLowerCase()
+            } as ChallengerLog;
+          });
+        }).filter((log: ChallengerLog) => {
+          const l = log.item?.trim().toLowerCase();
+          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null';
+        });
       }
       
       if (data.stage === 'Visualize' && data.output) {
@@ -287,21 +280,43 @@ export function subscribeToPipelineStream(
       let payload: BrandKitData | undefined;
       let traceLogs: ChallengerLog[] = [];
       
-      if (Array.isArray(data.trace)) {
+      if (data.challengeOutput && Array.isArray(data.challengeOutput.items)) {
+        traceLogs = data.challengeOutput.items.flatMap((item: any) => {
+          return (item.history || []).map((h: any) => {
+            const cardLabel = h.item || h.candidate || h.target || h.name || h.value || '';
+            const critiqueText = h.feedback || h.explanation || h.critique || '';
+            const verdictVal = h.verdict || 'pass';
+
+            return {
+              stage: `Challenge (${item.type || 'audit'}: ${cardLabel})`,
+              critique: critiqueText,
+              status: verdictVal === 'pass' ? 'approved' : 'rejected',
+              timestamp: h.timestamp || new Date().toISOString(),
+              item: cardLabel,
+              itemType: item.type,
+              verdict: verdictVal?.toLowerCase()
+            } as ChallengerLog;
+          });
+        }).filter((log: ChallengerLog) => {
+          const l = log.item?.trim().toLowerCase();
+          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null';
+        });
+      } else if (Array.isArray(data.trace)) {
         const itemMap = new Map<string, ChallengerLog>();
         data.trace.forEach((entry: any) => {
           if (entry.stage === 'Challenge' && entry.rawResponse) {
             try {
               const parsed = JSON.parse(entry.rawResponse);
-              const itemName = parsed.item || parsed.target || parsed.candidate;
-              const critiqueText = parsed.feedback || parsed.explanation || parsed.critique;
+              const itemName = parsed.item || parsed.target || parsed.candidate || parsed.name || parsed.value || '';
+              const critiqueText = parsed.feedback || parsed.explanation || parsed.critique || '';
               if (itemName && parsed.verdict) {
                 let cardLabel = itemName;
                 const quoteMatch = critiqueText?.match(/['"`]([^'"`]{2,40})['"`]/);
                 if (quoteMatch && quoteMatch[1] && !critiqueText.toLowerCase().includes(cardLabel.toLowerCase())) {
                   cardLabel = quoteMatch[1];
                 }
-                if (cardLabel && cardLabel.trim() !== '' && cardLabel !== '?') {
+                const l = cardLabel.trim().toLowerCase();
+                if (l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null') {
                   const log = {
                     stage: `Challenge (${cardLabel})`,
                     critique: critiqueText,

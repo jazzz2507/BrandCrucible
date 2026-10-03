@@ -329,17 +329,31 @@ async def run_challenger_item(
         prompt = prompts["Challenge"].format(item=item_val, positioning=positioning)
         res = await call_llm_fn("Challenge", prompt, ChallengeSchema, session)
         
-        reconciled_val = match_candidate_name(res.item or item_val, res.feedback, all_candidates)
+        current_item = res.item if res.item else item_val
+        feedback_text = res.feedback or ""
+        
+        if current_item.lower() not in feedback_text.lower():
+            quote_match = re.search(r'[\'"`]([^\'"`]{2,100})[\'"`]', feedback_text)
+            if quote_match:
+                current_item = quote_match.group(1)
         
         res_dump = res.model_dump()
-        res_dump["item"] = reconciled_val
+        res_dump["item"] = current_item
+        res_dump["candidate"] = current_item
+        res_dump["target"] = current_item
+        res_dump["name"] = current_item
+        res_dump["value"] = current_item
+        res_dump["feedback"] = feedback_text
+        res_dump["explanation"] = feedback_text
+        res_dump["critique"] = feedback_text
+        
         history.append(res_dump)
         
         scores_dump = res.scores.model_dump()
         current_avg = average(scores_dump)
         
         if best is None or current_avg > average(best["result"]["scores"]):
-            best = {"value": reconciled_val, "result": res_dump, "attempt": revision}
+            best = {"value": current_item, "result": res_dump, "attempt": revision}
             
         if not needs_revision(res):
             break
@@ -672,6 +686,7 @@ async def run_pipeline_task(session_id: str):
                 "data": json.dumps({
                     "brandKit": session.stage_outputs.get("Deliver", {}),
                     "consistencyCheck": session.stage_outputs.get("ConsistencyCheck", {}),
+                    "challengeOutput": session.stage_outputs.get("Challenge", {}),
                     "trace": session.trace
                 })
             })
