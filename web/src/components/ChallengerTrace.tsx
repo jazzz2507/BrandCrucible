@@ -18,7 +18,7 @@ export const ChallengerTrace: React.FC<Props> = ({ logs }) => {
         Challenger Audit & Cliche Filter Stream
       </div>
 
-      <div className="space-y-3 max-h-48 overflow-y-auto pr-2">
+      <div className="space-y-3 max-h-48 overflow-y-auto pr-2 custom-scrollbar">
         {logs.map((log, idx) => (
           <div key={idx} className="bg-white/5 rounded-lg p-3 border border-white/10">
             <div className="flex justify-between items-start mb-2">

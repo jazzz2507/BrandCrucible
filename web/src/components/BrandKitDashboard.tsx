@@ -25,7 +25,14 @@ export const BrandKitDashboard: React.FC<Props> = ({ data, traceLogs = [] }) => 
   const isConsistent = data?.consistencyCheck?.is_consistent;
   const consistencySummary = data?.consistencyCheck?.summary;
 
-  const paletteSwatches = data?.palette || derivePaletteFromDirection(colDir);
+  const rawPalette = (data?.palette && data.palette.length > 0)
+    ? data.palette
+    : (data?.visualIdentity?.palette && data.visualIdentity.palette.length > 0
+        ? data.visualIdentity.palette
+        : derivePaletteFromDirection(colDir));
+  const paletteSwatches: Array<{ name: string; hex: string }> = rawPalette.map((p: any) =>
+    typeof p === 'string' ? { name: p, hex: p } : { name: p.name || 'Swatch', hex: p.hex || '#000000' }
+  );
   const typographySwatches = data?.typography || deriveTypographyFromDirection(typDir);
 
   const handleCopy = async () => {

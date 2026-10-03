@@ -13,11 +13,12 @@ from sse_starlette.sse import EventSourceResponse
 from collections import defaultdict
 from contextlib import asynccontextmanager
 
+import re
 from store import store
 from llm import call_stage_llm, LLMError
 from schemas import (
     DiscoverSchema, PositionSchema, ShapeSchema, VisualizeSchema,
-    ChallengeSchema, DeliverSchema, ConsistencySchema, DeliverDiscovery, DeliverPositioning, DeliverBrandShape, DeliverVisualIdentity
+    ChallengeSchema, DeliverSchema, ConsistencySchema, DeliverDiscovery, DeliverPositioning, DeliverBrandShape, DeliverVisualIdentity, ColorSwatch
 )
 
 load_dotenv()
@@ -165,7 +166,7 @@ prompts = {
     "Discover": "You are the Discover agent. Identify the startup idea's likely primary and secondary audiences, the core problem, constraints, assumptions, and unanswered questions. This stage is research framing only: do not propose names, taglines, brand voice, positioning, or visual identity. Be specific to the supplied idea and distinguish known facts from assumptions. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}",
     "Position": "You are the Position agent. Define a clear value proposition, differentiators, competitive angle, and positioning statement using the idea and discovery context. This stage is strategic positioning only: do not generate names, taglines, personality, voice, or visual directions. Be specific to this idea and audience, avoiding generic claims. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nDiscovery: {discovery}",
     "Shape": "You are the Shape agent. Create candidate brand names with rationale and risk, personality traits, tagline options, and a concise voice description using the positioning context. This stage handles verbal identity only: do not revisit discovery, rewrite positioning, or suggest colors, typography, or imagery. Make ideas memorable and specific to this startup, not generic. If revision guidance is supplied, address it directly. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\n{revision_guidance}",
-    "Visualize": "You are the Visualize agent. Propose a cohesive color, typography, and imagery direction, with rationale grounded in the brand strategy and personality. This stage is visual direction only: do not invent names, taglines, or revise the positioning. Be concrete and specific to this brand rather than relying on generic design adjectives. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\nShape: {shape}",
+    "Visualize": "You are the Visualize agent. Propose a cohesive color, typography, and imagery direction, with rationale grounded in the brand strategy and personality. In color_direction, explicitly define the palette naming 3 core brand colors (Primary, Secondary, Accent) alongside their exact 6-digit hex codes (e.g. 'Primary: Electric Lime (#39FF14), Secondary: Obsidian Slate (#18181B), Accent: Warm Alabaster (#F4F4F5)'). In palette, provide the corresponding 3 items with exact 'name' and 'hex' matching the color_direction prose so they are strictly bound. This stage is visual direction only: do not invent names, taglines, or revise the positioning. Be concrete and specific to this brand rather than relying on generic design adjectives. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\nShape: {shape}",
     "Challenge": "You are the Challenge agent. Critically assess one supplied brand item against its positioning context. Score cliche risk, distinctiveness, audience fit, and consistency with positioning from 0 to 10; for cliche risk, a higher score means lower risk / more original. Give actionable feedback and a pass, revise, or reject verdict. Do not generate a replacement or change the strategy. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nItem: {item}\nPositioning: {positioning}",
     "Deliver": "You are the Deliver agent. Compile the validated prior-stage decisions into one clean, exportable brand kit using the supplied chosen name, tagline, discovery, positioning, verbal identity, and visual direction. This stage compiles only: do not invent missing strategy or add new creative directions. Keep every field specific and faithful to supplied outputs. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nName: {name}\nTagline: {tagline}\nDiscovery: {discovery}\nPositioning: {positioning}\nShape: {shape}\nVisual: {visual}",
     "ConsistencyCheck": "You are the Consistency Check agent. Critically evaluate the final compiled brand kit as a whole against the original idea and prior stage decisions. Check specifically:\n1. Does the final brand name match the original idea?\n2. Does the tagline directly support the positioning?\n3. Do the brand personality traits match the discovered audience and problem?\n4. Does the visual identity fit the brand personality and positioning?\n5. Is there overall coherence across name, tagline, positioning, voice, and visual identity?\n6. Has the brand drifted from the core problem and audience of the original idea?\n\nEvaluate issues (if any) with area, description, and severity (\"minor\" | \"major\"). Provide an overall_score from 0 to 10, a boolean is_consistent (true if score >= 7 and no unaddressed major disconnects), and a concise summary (one or two sentences). Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nBrand Kit: {brand_kit}"
@@ -282,12 +283,108 @@ async def run_challenger_item(
         "exhausted_revisions": exhausted
     }
 
+def extract_palette_from_prose(color_direction: str) -> List[Dict[str, str]]:
+    if not color_direction:
+        return [
+            {"name": "Obsidian Base", "hex": "#121318"},
+            {"name": "Forge Ember", "hex": "#FF6B2B"},
+            {"name": "Warm Stone", "hex": "#2A2D37"}
+        ]
+    
+    colors: List[Dict[str, str]] = []
+    seen_hex = set()
+    
+    # 1. Look for explicit name and hex patterns: e.g. "Primary: Electric Lime (#39FF14)" or "Electric Lime (#39FF14)" or "Electric Lime: #39FF14"
+    pattern = re.compile(
+        r'([A-Za-z0-9\s\-]+?)\s*[:\(]\s*(#[0-9A-Fa-f]{6})\)?',
+        re.IGNORECASE
+    )
+    for match in pattern.finditer(color_direction):
+        raw_name, hex_code = match.group(1).strip(), match.group(2).upper()
+        parts = re.split(r'[,;:\.\n]|(?:\b(?:featuring|with|and|by|of|the|is|in|palette|primary|secondary|accent|base|neutral|hero)\b)', raw_name, flags=re.IGNORECASE)
+        candidate = parts[-1].strip() if parts else raw_name.strip()
+        candidate = re.sub(r'^(?:a|an|the|as|for|deep|bright|dark|light)\s+', '', candidate, flags=re.IGNORECASE).strip()
+        words = candidate.split()
+        if len(words) > 3:
+            words = words[-3:]
+        cleaned_name = ' '.join(w.capitalize() for w in words)
+        if len(cleaned_name) > 1 and hex_code not in seen_hex:
+            colors.append({"name": cleaned_name, "hex": hex_code})
+            seen_hex.add(hex_code)
+            if len(colors) >= 3:
+                return colors
+
+    # 2. Curated rule matches in order of mention in text
+    known_rules = [
+        (["electric lime", "lime", "neon green"], {"name": "Electric Lime", "hex": "#39FF14"}),
+        (["electric cyan", "cyan", "neon blue"], {"name": "Electric Cyan", "hex": "#00F0FF"}),
+        (["hot coral", "coral", "crimson", "burgundy"], {"name": "Hot Coral", "hex": "#FF6F61"}),
+        (["galvanized steel", "steel gray", "steel grey", "steel"], {"name": "Galvanized Steel", "hex": "#4A5568"}),
+        (["timber brown", "workbench timber", "workbench", "wood"], {"name": "Workbench Timber", "hex": "#7C4A27"}),
+        (["hazard yellow", "safety yellow", "solar yellow", "yellow"], {"name": "Hazard Yellow", "hex": "#FACC15"}),
+        (["terracotta", "forge ember", "ember", "rust"], {"name": "Forge Ember", "hex": "#F97316"}),
+        (["forest sage", "forest", "sage", "emerald", "green"], {"name": "Forest Sage", "hex": "#15803D"}),
+        (["deep navy", "navy", "cobalt", "indigo"], {"name": "Deep Navy", "hex": "#1E3A8A"}),
+        (["warm ivory", "ivory", "alabaster", "cream", "sand"], {"name": "Warm Ivory", "hex": "#F5F5F4"}),
+        (["matte obsidian", "charcoal", "obsidian", "matte black", "black"], {"name": "Matte Obsidian", "hex": "#18181B"}),
+        (["slate grey", "slate gray", "slate"], {"name": "Slate Grey", "hex": "#334155"}),
+        (["industrial teal", "teal"], {"name": "Industrial Teal", "hex": "#0D9488"}),
+    ]
+    
+    lower_text = color_direction.lower()
+    rule_hits = []
+    for keywords, color_item in known_rules:
+        earliest_pos = -1
+        for kw in keywords:
+            pos = lower_text.find(kw)
+            if pos != -1 and (earliest_pos == -1 or pos < earliest_pos):
+                earliest_pos = pos
+        if earliest_pos != -1:
+            rule_hits.append((earliest_pos, color_item))
+    
+    rule_hits.sort(key=lambda x: x[0])
+    for _, item in rule_hits:
+        hex_code = item["hex"].upper()
+        if hex_code not in seen_hex:
+            colors.append({"name": item["name"], "hex": hex_code})
+            seen_hex.add(hex_code)
+            if len(colors) >= 3:
+                return colors
+
+    # 3. Any raw hex codes found in text
+    raw_hexes = re.findall(r'#[0-9A-Fa-f]{6}', color_direction)
+    for h in raw_hexes:
+        hex_code = h.upper()
+        if hex_code not in seen_hex:
+            colors.append({"name": f"Hex {hex_code}", "hex": hex_code})
+            seen_hex.add(hex_code)
+            if len(colors) >= 3:
+                return colors
+
+    # 4. Fill defaults up to 3
+    defaults = [
+        {"name": "Obsidian Base", "hex": "#121318"},
+        {"name": "Forge Ember", "hex": "#FF6B2B"},
+        {"name": "Warm Stone", "hex": "#2A2D37"}
+    ]
+    for d in defaults:
+        if len(colors) < 3 and d["hex"].upper() not in seen_hex:
+            colors.append(d)
+            seen_hex.add(d["hex"].upper())
+
+    return colors[:3]
+
 async def run_stage(stage: str, session: BaseModel):
     use_mock = os.environ.get("USE_MOCK_LLM", "true").lower() not in ("0", "false", "no")
     if use_mock:
         await asyncio.sleep(1)
         mock_output = {"mock": f"data for {stage}"}
         if stage == "Deliver":
+            mock_palette = [
+                {"name": "Obsidian Slate", "hex": "#0F172A"},
+                {"name": "Sky Cyan", "hex": "#38BDF8"},
+                {"name": "Crimson Ember", "hex": "#F43F5E"}
+            ]
             mock_output = {
                 "sessionId": session.session_id,
                 "stage": "Deliver",
@@ -295,12 +392,13 @@ async def run_stage(stage: str, session: BaseModel):
                     "name": "BrandCrucible",
                     "tagline": "Forge distinct identities, incinerate clichés",
                     "positioning": "The adversarial branding engine for ambitious founders",
-                    "palette": ["#0F172A", "#38BDF8", "#F43F5E"],
+                    "palette": mock_palette,
                     "typography": {
                         "heading": "Space Grotesk",
                         "body": "Inter"
                     }
                 },
+                "palette": mock_palette,
                 "challengeReport": {
                     "clicheScore": 14,
                     "distinctivenessScore": 92,
@@ -333,6 +431,19 @@ async def run_stage(stage: str, session: BaseModel):
         prompt = prompts["Visualize"].format(idea=idea, positioning=positioning, shape=shape)
         res = await call_stage_llm(stage, prompt, VisualizeSchema, session)
         output = res.model_dump()
+        
+        # Ensure palette is strictly bound to color_direction text
+        if not output.get("palette"):
+            output["palette"] = extract_palette_from_prose(output.get("color_direction", ""))
+        else:
+            normalized = []
+            for item in output["palette"]:
+                if isinstance(item, dict) and "name" in item and "hex" in item:
+                    hex_val = str(item["hex"]).strip()
+                    if not hex_val.startswith("#"):
+                        hex_val = f"#{hex_val}"
+                    normalized.append({"name": str(item["name"]).strip(), "hex": hex_val.upper()})
+            output["palette"] = normalized if normalized else extract_palette_from_prose(output.get("color_direction", ""))
     elif stage == "Challenge":
         positioning = json.dumps(session.stage_outputs.get("Position", {}))
         shape_output = session.stage_outputs.get("Shape", {})
@@ -372,6 +483,16 @@ async def run_stage(stage: str, session: BaseModel):
         prompt = prompts["Deliver"].format(name=chosen_name, tagline=chosen_tagline, discovery=discovery, positioning=positioning, shape=shape, visual=visual)
         res = await call_stage_llm(stage, prompt, DeliverSchema, session)
         output = res.model_dump()
+        
+        # Carry forward and strictly bind palette from Visualize
+        visualize_output = session.stage_outputs.get("Visualize", {})
+        visual_palette = visualize_output.get("palette") or extract_palette_from_prose(
+            output.get("visual_identity", {}).get("color_direction", "") or visualize_output.get("color_direction", "")
+        )
+        if visual_palette:
+            if "visual_identity" in output and isinstance(output["visual_identity"], dict):
+                output["visual_identity"]["palette"] = visual_palette
+            output["palette"] = visual_palette
         
     elif stage == "ConsistencyCheck":
         brand_kit = json.dumps(session.stage_outputs.get("Deliver", {}))

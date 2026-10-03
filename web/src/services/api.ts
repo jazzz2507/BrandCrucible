@@ -43,53 +43,107 @@ function stageIndexFor(stageId: string | undefined): number {
 }
 
 export function derivePaletteFromDirection(colorDirection?: string): Array<{ name: string; hex: string }> {
-  const text = (colorDirection || '').toLowerCase();
-  
-  const rules = [
-    { match: ['galvanized steel', 'steel gray'], color: { name: 'Galvanized Steel', hex: '#4A5568' } },
-    { match: ['timber brown', 'workbench', 'wood'], color: { name: 'Workbench Timber', hex: '#7C4A27' } },
-    { match: ['hazard yellow', 'safety yellow', 'yellow'], color: { name: 'Hazard Yellow', hex: '#FACC15' } },
-    { match: ['terracotta', 'ember', 'rust'], color: { name: 'Forge Ember', hex: '#F97316' } },
-    { match: ['forest', 'sage', 'emerald', 'green'], color: { name: 'Forest Sage', hex: '#15803D' } },
-    { match: ['navy', 'cobalt', 'indigo'], color: { name: 'Deep Navy', hex: '#1E3A8A' } },
-    { match: ['cream', 'ivory', 'alabaster', 'sand'], color: { name: 'Warm Ivory', hex: '#F5F5F4' } },
-    { match: ['charcoal', 'obsidian', 'matte black'], color: { name: 'Matte Obsidian', hex: '#18181B' } },
-    { match: ['slate'], color: { name: 'Slate Grey', hex: '#334155' } },
-    { match: ['crimson', 'burgundy', 'coral'], color: { name: 'Crimson Clay', hex: '#DC2626' } },
-    { match: ['teal', 'cyan'], color: { name: 'Industrial Teal', hex: '#0D9488' } }
-  ];
+  const text = (colorDirection || '').trim();
+  if (!text) {
+    return [
+      { name: 'Obsidian Base', hex: '#121318' },
+      { name: 'Forge Ember', hex: '#FF6B2B' },
+      { name: 'Warm Stone', hex: '#2A2D37' }
+    ];
+  }
 
   const matchedColors: Array<{ name: string; hex: string }> = [];
-  
+  const seenHex = new Set<string>();
+
+  // 1. Explicitly bound name + hex pairs in text: e.g. "Electric Lime (#39FF14)" or "Primary: Electric Lime (#39FF14)"
+  const nameHexRegex = /([A-Za-z0-9\s\-]+?)\s*[:\(]\s*(#[0-9A-Fa-f]{6})\)?/gi;
+  let m: RegExpExecArray | null;
+  while ((m = nameHexRegex.exec(text)) !== null) {
+    const rawName = m[1].trim();
+    const hex = m[2].toUpperCase();
+    const parts = rawName.split(/[,;:\.\n]|(?:\b(?:featuring|with|and|by|of|the|is|in|palette|primary|secondary|accent|base|neutral|hero)\b)/i);
+    let candidate = (parts.length > 0 ? parts[parts.length - 1] : rawName).trim();
+    candidate = candidate.replace(/^(?:a|an|the|as|for|deep|bright|dark|light)\s+/i, '').trim();
+    const words = candidate.split(/\s+/).filter(Boolean);
+    const trimmedWords = words.length > 3 ? words.slice(-3) : words;
+    const formattedName = trimmedWords
+      .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(' ');
+    if (formattedName.length > 1 && !seenHex.has(hex)) {
+      matchedColors.push({ name: formattedName, hex });
+      seenHex.add(hex);
+      if (matchedColors.length >= 3) return matchedColors;
+    }
+  }
+
+  // 2. Curated rule keywords matched by their order of appearance in prose
+  const rules = [
+    { match: ['electric lime', 'lime', 'neon green'], color: { name: 'Electric Lime', hex: '#39FF14' } },
+    { match: ['electric cyan', 'cyan', 'neon blue'], color: { name: 'Electric Cyan', hex: '#00F0FF' } },
+    { match: ['hot coral', 'coral', 'crimson', 'burgundy'], color: { name: 'Hot Coral', hex: '#FF6F61' } },
+    { match: ['galvanized steel', 'steel gray', 'steel grey', 'steel'], color: { name: 'Galvanized Steel', hex: '#4A5568' } },
+    { match: ['timber brown', 'workbench timber', 'workbench', 'wood'], color: { name: 'Workbench Timber', hex: '#7C4A27' } },
+    { match: ['hazard yellow', 'safety yellow', 'solar yellow', 'yellow'], color: { name: 'Hazard Yellow', hex: '#FACC15' } },
+    { match: ['terracotta', 'forge ember', 'ember', 'rust'], color: { name: 'Forge Ember', hex: '#F97316' } },
+    { match: ['forest sage', 'forest', 'sage', 'emerald', 'green'], color: { name: 'Forest Sage', hex: '#15803D' } },
+    { match: ['deep navy', 'navy', 'cobalt', 'indigo'], color: { name: 'Deep Navy', hex: '#1E3A8A' } },
+    { match: ['warm ivory', 'ivory', 'alabaster', 'cream', 'sand'], color: { name: 'Warm Ivory', hex: '#F5F5F4' } },
+    { match: ['matte obsidian', 'charcoal', 'obsidian', 'matte black', 'black'], color: { name: 'Matte Obsidian', hex: '#18181B' } },
+    { match: ['slate grey', 'slate gray', 'slate'], color: { name: 'Slate Grey', hex: '#334155' } },
+    { match: ['industrial teal', 'teal'], color: { name: 'Industrial Teal', hex: '#0D9488' } }
+  ];
+
+  const lowerText = text.toLowerCase();
+  const ruleHits: Array<{ pos: number; color: { name: string; hex: string } }> = [];
   for (const rule of rules) {
-    if (rule.match.some(m => text.includes(m))) {
-      matchedColors.push(rule.color);
+    let earliest = -1;
+    for (const kw of rule.match) {
+      const idx = lowerText.indexOf(kw);
+      if (idx !== -1 && (earliest === -1 || idx < earliest)) {
+        earliest = idx;
+      }
+    }
+    if (earliest !== -1) {
+      ruleHits.push({ pos: earliest, color: rule.color });
     }
   }
 
+  ruleHits.sort((a, b) => a.pos - b.pos);
+  for (const hit of ruleHits) {
+    const hex = hit.color.hex.toUpperCase();
+    if (!seenHex.has(hex)) {
+      matchedColors.push({ name: hit.color.name, hex });
+      seenHex.add(hex);
+      if (matchedColors.length >= 3) return matchedColors;
+    }
+  }
+
+  // 3. Standalone hex codes
   const hexMatches = text.match(/#[0-9A-Fa-f]{6}/g) || [];
-  for (const hex of hexMatches) {
-    if (!matchedColors.some(c => c.hex.toUpperCase() === hex.toUpperCase())) {
-      matchedColors.push({ name: `Hex ${hex.toUpperCase()}`, hex: hex.toUpperCase() });
+  for (const rawHex of hexMatches) {
+    const hex = rawHex.toUpperCase();
+    if (!seenHex.has(hex)) {
+      matchedColors.push({ name: `Hex ${hex}`, hex });
+      seenHex.add(hex);
+      if (matchedColors.length >= 3) return matchedColors;
     }
   }
 
-  // Deduplicate by hex
-  const uniqueColors = matchedColors.filter((c, index, self) =>
-    index === self.findIndex((t) => t.hex.toUpperCase() === c.hex.toUpperCase())
-  );
-
+  // 4. Default fallbacks
   const defaults = [
     { name: 'Obsidian Base', hex: '#121318' },
     { name: 'Forge Ember', hex: '#FF6B2B' },
     { name: 'Warm Stone', hex: '#2A2D37' }
   ];
 
-  while (uniqueColors.length < 3) {
-    uniqueColors.push(defaults[uniqueColors.length]);
+  for (const d of defaults) {
+    if (matchedColors.length < 3 && !seenHex.has(d.hex.toUpperCase())) {
+      matchedColors.push(d);
+      seenHex.add(d.hex.toUpperCase());
+    }
   }
 
-  return uniqueColors.slice(0, 3);
+  return matchedColors.slice(0, 3);
 }
 
 export function deriveTypographyFromDirection(typographyDirection?: string): { headerFont: string; bodyFont: string } {
@@ -163,8 +217,30 @@ export function subscribeToPipelineStream(
         });
       }
       
+      if (data.stage === 'Visualize' && data.output) {
+        const out = data.output;
+        const rawPalette = out.palette;
+        let palette: Array<{ name: string; hex: string }> | undefined;
+        if (Array.isArray(rawPalette) && rawPalette.length > 0) {
+          palette = rawPalette.map((p: any) => typeof p === 'string' ? { name: p, hex: p } : p);
+        } else {
+          palette = derivePaletteFromDirection(out.color_direction);
+        }
+        payload = {
+          visualIdentity: out,
+          palette,
+        };
+      }
+      
       if (data.stage === 'Deliver' && data.output) {
         const out = data.output;
+        const rawPalette = out.palette || out.visual_identity?.palette;
+        let palette: Array<{ name: string; hex: string }> | undefined;
+        if (Array.isArray(rawPalette) && rawPalette.length > 0) {
+          palette = rawPalette.map((p: any) => typeof p === 'string' ? { name: p, hex: p } : p);
+        } else {
+          palette = derivePaletteFromDirection(out.visual_identity?.color_direction);
+        }
         payload = {
           brandName: out.brand_name,
           tagline: out.tagline,
@@ -172,6 +248,7 @@ export function subscribeToPipelineStream(
           positioning: out.positioning,
           brandShape: out.brand_shape,
           visualIdentity: out.visual_identity,
+          palette,
         };
       }
 
@@ -221,6 +298,13 @@ export function subscribeToPipelineStream(
       
       if (data.brandKit || data.consistencyCheck) {
         const out = data.brandKit || {};
+        const rawPalette = out.palette || out.visual_identity?.palette;
+        let palette: Array<{ name: string; hex: string }> | undefined;
+        if (Array.isArray(rawPalette) && rawPalette.length > 0) {
+          palette = rawPalette.map((p: any) => typeof p === 'string' ? { name: p, hex: p } : p);
+        } else {
+          palette = derivePaletteFromDirection(out.visual_identity?.color_direction);
+        }
         payload = {
           brandName: out.brand_name,
           tagline: out.tagline,
@@ -228,6 +312,7 @@ export function subscribeToPipelineStream(
           positioning: out.positioning,
           brandShape: out.brand_shape,
           visualIdentity: out.visual_identity,
+          palette,
           consistencyCheck: data.consistencyCheck,
         };
       }

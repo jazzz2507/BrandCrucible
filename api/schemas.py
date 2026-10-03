@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Literal
+from typing import List, Literal, Optional
 
 class Audience(BaseModel):
     primary: str
@@ -29,11 +29,17 @@ class ShapeSchema(BaseModel):
     tagline_options: List[str]
     voice_description: str
 
+class ColorSwatch(BaseModel):
+    name: str
+    hex: str
+
 class VisualizeSchema(BaseModel):
     color_direction: str
     typography_direction: str
     imagery_direction: str
     rationale: str
+    palette: Optional[List[ColorSwatch]] = None
+
 
 class ChallengeScores(BaseModel):
     cliche_risk: float
@@ -69,6 +75,7 @@ class DeliverVisualIdentity(BaseModel):
     typography_direction: str
     imagery_direction: str
     rationale: str
+    palette: Optional[List[ColorSwatch]] = None
 
 class DeliverSchema(BaseModel):
     brand_name: str
@@ -78,6 +85,7 @@ class DeliverSchema(BaseModel):
     brand_shape: DeliverBrandShape
     visual_identity: DeliverVisualIdentity
     rationale: str
+    palette: Optional[List[ColorSwatch]] = None
 
 class ConsistencyIssue(BaseModel):
     area: str
