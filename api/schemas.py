@@ -38,6 +38,7 @@ class VisualizeSchema(BaseModel):
     typography_direction: str
     imagery_direction: str
     rationale: str
+    palette: Optional[List[ColorSwatch]] = None
 
 class ChallengeScores(BaseModel):
     cliche_risk: float

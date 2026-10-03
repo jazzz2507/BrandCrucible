@@ -45,7 +45,7 @@ async def test_challenger_stops_early_on_pass():
     assert len(res["history"]) == 1
 
 @pytest.mark.asyncio
-async def test_challenger_makes_at_most_3_attempts():
+async def test_challenger_makes_at_most_2_attempts():
     challenge_calls = 0
     shape_calls = 0
 
@@ -62,10 +62,10 @@ async def test_challenger_makes_at_most_3_attempts():
     cand = {"type": "name", "value": "InitialCandidate"}
     res = await run_challenger_item(cand, idea="startup idea", positioning="positioning text", call_llm_fn=fake_llm)
 
-    # MAX_REVISIONS = 2 -> Initial (0) + Revision 1 (1) + Revision 2 (2) = 3 total attempts
-    assert challenge_calls == 3
-    assert shape_calls == 2
-    assert len(res["history"]) == 3
+    # MAX_REVISIONS = 1 -> Initial (0) + Revision 1 (1) = 2 total attempts
+    assert challenge_calls == 2
+    assert shape_calls == 1
+    assert len(res["history"]) == 2
     assert res["exhausted_revisions"] is True
     assert res["verdict"] == "revise"
 
@@ -133,13 +133,11 @@ async def test_challenger_history_is_recorded():
     res = await run_challenger_item(cand, idea="startup idea", positioning="positioning text", call_llm_fn=fake_llm)
 
     assert "history" in res
-    assert len(res["history"]) == 3
+    assert len(res["history"]) == 2
     assert res["history"][0]["item"] == "Name_0"
     assert res["history"][0]["feedback"] == "Feedback 0"
     assert res["history"][1]["item"] == "Name_1"
     assert res["history"][1]["feedback"] == "Feedback 1"
-    assert res["history"][2]["item"] == "Name_2"
-    assert res["history"][2]["feedback"] == "Feedback 2"
 
 
 def test_challenge_schema_aliases():

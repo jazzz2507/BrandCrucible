@@ -253,7 +253,7 @@ def select_candidate(ranked_items: List[Dict[str, Any]], fallback_candidates: Li
             return getattr(cand, fallback_key, "Unknown")
     return "Unknown"
 
-MAX_REVISIONS = 2
+MAX_REVISIONS = 1
 
 async def run_challenger_item(
     cand: Dict[str, str],
@@ -502,15 +502,33 @@ async def run_stage(stage: str, session: BaseModel):
             
         challenge_results = []
         seen_values = set()
-        for cand in candidates:
+        
+        async def evaluate_candidate(cand):
             pool = list(candidate_names if cand["type"] == "name" else candidate_taglines)
             res_item = await run_challenger_item(cand, idea, positioning, session, all_candidates=pool)
+            
+            # Emit live event
+            await store.add_event(session.session_id, {
+                "event": "challenger_eval",
+                "data": json.dumps({
+                    "sessionId": session.session_id,
+                    "item": res_item
+                })
+            })
+            return res_item
+
+        tasks = [evaluate_candidate(cand) for cand in candidates]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for res_item in results:
+            if isinstance(res_item, Exception):
+                print(f"Candidate evaluation failed: {res_item}")
+                continue
             val_norm = res_item["value"].strip().lower()
             if val_norm in seen_values:
                 continue
             seen_values.add(val_norm)
             challenge_results.append(res_item)
-            await asyncio.sleep(4.5)
             
         output = {"items": challenge_results}
         

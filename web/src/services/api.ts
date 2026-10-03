@@ -195,6 +195,44 @@ export function subscribeToPipelineStream(
     }
   });
 
+  eventSource.addEventListener('challenger_eval', (e: MessageEvent) => {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.item) {
+        const item = data.item;
+        const traceLogs: ChallengerLog[] = (item.history || []).map((h: any) => {
+          const cardLabel = h.item || h.candidate || h.target || h.name || h.value || '';
+          const critiqueText = h.feedback || h.explanation || h.critique || '';
+          const verdictVal = h.verdict || 'pass';
+
+          return {
+            stage: `Challenge (${item.type || 'audit'}: ${cardLabel})`,
+            critique: critiqueText,
+            status: verdictVal === 'pass' ? 'approved' : 'rejected',
+            timestamp: new Date().toISOString(),
+            item: cardLabel,
+            itemType: item.type,
+            verdict: verdictVal?.toLowerCase()
+          } as ChallengerLog;
+        }).filter((log: ChallengerLog) => {
+          const l = log.item?.trim().toLowerCase();
+          const hasCritique = log.critique?.trim().length > 0;
+          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null' && hasCritique;
+        });
+
+        if (traceLogs.length > 0) {
+          onEvent({
+            stageIndex: stageIndexFor('Challenge'),
+            stageName: 'Challenge',
+            traceLogs: traceLogs,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to parse challenger_eval payload:', err);
+    }
+  });
+
   // A stage finished — may carry a challenger critique or partial brand data
   eventSource.addEventListener('stage_complete', (e: MessageEvent) => {
     try {

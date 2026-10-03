@@ -42,7 +42,7 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
     last_error = ""
     
     attempt = 1
-    max_attempts = 8
+    max_attempts = 3
     retries_429 = 0
     
     while attempt <= max_attempts:
@@ -57,15 +57,19 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
                 temperature=0.7
             )
             
-            response = client.models.generate_content(
+            coro = client.aio.models.generate_content(
                 model=model_name,
                 contents=retry_prompt,
                 config=config,
             )
+            response = await asyncio.wait_for(coro, timeout=25.0)
             raw = response.text or ""
             parsed_json = json.loads(raw)
             result = schema.model_validate(parsed_json)
             
+        except asyncio.TimeoutError:
+            failure_kind = "timeout"
+            error_msg = "LLM call timed out after 25 seconds"
         except errors.APIError as exc:
             code = getattr(exc, "code", None)
             err_msg = str(exc)
@@ -82,7 +86,7 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
                 if match:
                     delay = float(match.group(1)) + 1.0
                 else:
-                    delay = [20.0, 40.0, 60.0][retries_429 - 1]
+                    delay = [2.0, 4.0, 6.0][min(retries_429 - 1, 2)]
                     
                 entry = {
                     "stage": stage,
