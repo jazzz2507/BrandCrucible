@@ -57,7 +57,8 @@ async def call_stage_llm(stage: str, prompt: str, schema: Type[T], session: Base
                 temperature=0.7
             )
             
-            coro = client.aio.models.generate_content(
+            coro = asyncio.to_thread(
+                client.models.generate_content,
                 model=model_name,
                 contents=retry_prompt,
                 config=config,

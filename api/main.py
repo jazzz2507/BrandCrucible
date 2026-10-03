@@ -685,7 +685,7 @@ async def stream_pipeline(session_id: str, request: Request):
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    if session.status == "created":
+    if session_id != "golden-demo" and session.status == "created":
         store.set_status(session_id, "running")
         task = asyncio.create_task(run_pipeline_task(session_id))
         store._tasks[session_id] = task
@@ -694,36 +694,70 @@ async def stream_pipeline(session_id: str, request: Request):
     start_index = int(last_event_id) + 1 if last_event_id and last_event_id.isdigit() else 0
 
     async def event_generator():
+        if session_id == "golden-demo":
+            total = len(STAGES)
+            for i, stage in enumerate(STAGES):
+                yield {
+                    "event": "stage_start",
+                    "data": json.dumps({
+                        "sessionId": session_id,
+                        "stage": stage,
+                        "index": i,
+                        "total": total
+                    })
+                }
+                await asyncio.sleep(0.15)
+                yield {
+                    "event": "stage_complete",
+                    "data": json.dumps({
+                        "sessionId": session_id,
+                        "stage": stage,
+                        "index": i,
+                        "total": total,
+                        "output": session.stage_outputs.get(stage, {})
+                    })
+                }
+            yield {
+                "event": "done",
+                "data": json.dumps({
+                    "brandKit": session.stage_outputs.get("Deliver", {}),
+                    "consistencyCheck": session.stage_outputs.get("ConsistencyCheck", {}),
+                    "challengeOutput": session.stage_outputs.get("Challenge", {}),
+                    "trace": session.trace
+                })
+            }
+            return
+
         idx = start_index
         cond = store.get_condition(session_id)
         
         try:
             while True:
                 if await request.is_disconnected():
-                    if session_id in store._tasks:
-                        store._tasks[session_id].cancel()
                     break
                 
-            while idx < len(session.events):
-                ev = session.events[idx]
-                yield {
-                    "event": ev["event"],
-                    "data": ev["data"],
-                    "id": str(idx)
-                }
-                if ev["event"] in ("done", "error"):
+                while idx < len(session.events):
+                    ev = session.events[idx]
+                    yield {
+                        "event": ev["event"],
+                        "data": ev["data"],
+                        "id": str(idx)
+                    }
+                    if ev["event"] in ("done", "error"):
+                        return
+                    idx += 1
+                    
+                if session.status in ("complete", "error") and idx >= len(session.events):
                     return
-                idx += 1
-                
-            if session.status in ("complete", "error") and idx >= len(session.events):
-                return
-                
-            async with cond:
-                await cond.wait()
+                    
+                async with cond:
+                    try:
+                        await asyncio.wait_for(cond.wait(), timeout=1.0)
+                    except asyncio.TimeoutError:
+                        pass
         finally:
-            if await request.is_disconnected():
-                if session_id in store._tasks:
-                    store._tasks[session_id].cancel()
+            if session_id in store._tasks:
+                store._tasks[session_id].cancel()
 
     return EventSourceResponse(
         event_generator(),
