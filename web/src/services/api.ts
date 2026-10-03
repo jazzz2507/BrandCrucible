@@ -229,7 +229,7 @@ export function subscribeToPipelineStream(
             itemType: item.type,
             verdict: verdictVal?.toLowerCase()
           } as ChallengerLog;
-        });
+        }).filter((log: ChallengerLog) => log.item && log.item.trim() !== '' && log.item !== '?');
       }
       
       if (data.stage === 'Visualize' && data.output) {
@@ -301,16 +301,18 @@ export function subscribeToPipelineStream(
                 if (quoteMatch && quoteMatch[1] && !critiqueText.toLowerCase().includes(cardLabel.toLowerCase())) {
                   cardLabel = quoteMatch[1];
                 }
-                const log = {
-                  stage: `Challenge (${cardLabel})`,
-                  critique: critiqueText,
-                  status: parsed.verdict === 'pass' ? 'approved' : 'rejected',
-                  timestamp: entry.timestamp || new Date().toISOString(),
-                  item: cardLabel,
-                  itemType: parsed.type,
-                  verdict: parsed.verdict.toLowerCase()
-                } as ChallengerLog;
-                itemMap.set(cardLabel, log);
+                if (cardLabel && cardLabel.trim() !== '' && cardLabel !== '?') {
+                  const log = {
+                    stage: `Challenge (${cardLabel})`,
+                    critique: critiqueText,
+                    status: parsed.verdict === 'pass' ? 'approved' : 'rejected',
+                    timestamp: entry.timestamp || new Date().toISOString(),
+                    item: cardLabel,
+                    itemType: parsed.type,
+                    verdict: parsed.verdict.toLowerCase()
+                  } as ChallengerLog;
+                  itemMap.set(cardLabel, log);
+                }
               }
             } catch (err) {}
           }

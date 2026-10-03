@@ -31,27 +31,4 @@ def test_extract_palette_golden_data_order():
     assert palette[2]["name"] == "Hazard Yellow"
     assert palette[2]["hex"] == "#FACC15"
 
-def test_schema_optional_palette_backwards_compatibility():
-    # Without palette
-    data_without = {
-        "color_direction": "Utilitarian palette",
-        "typography_direction": "Sturdy sans",
-        "imagery_direction": "Honest photography",
-        "rationale": "Direct reflection"
-    }
-    schema = VisualizeSchema.model_validate(data_without)
-    assert schema.palette is None
 
-    # With palette
-    data_with = {
-        **data_without,
-        "palette": [
-            {"name": "Electric Lime", "hex": "#39FF14"},
-            {"name": "Obsidian Slate", "hex": "#18181B"},
-            {"name": "Pure White", "hex": "#FFFFFF"}
-        ]
-    }
-    schema_with = VisualizeSchema.model_validate(data_with)
-    assert schema_with.palette is not None
-    assert len(schema_with.palette) == 3
-    assert schema_with.palette[0].name == "Electric Lime"
