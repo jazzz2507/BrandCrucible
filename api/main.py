@@ -59,7 +59,10 @@ def health_check():
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    sem = get_pipeline_semaphore()
+    running_pipelines = MAX_CONCURRENT_PIPELINES - sem._value if hasattr(sem, "_value") else 0
+    if running_pipelines < 0: running_pipelines = 0
+    return {"status": "ok", "running": running_pipelines, "queued": queue_waiters}
 
 RATE_LIMIT_SESSIONS_PER_HOUR = int(os.environ.get("RATE_LIMIT_SESSIONS_PER_HOUR", 5))
 ip_sessions = defaultdict(list)
@@ -484,13 +487,13 @@ async def run_stage(stage: str, session: BaseModel):
         output = res.model_dump()
         
         # Ensure palette is strictly bound to color_direction text
-        output["palette"] = extract_palette_from_prose(output.get("color_direction", ""))
+        output["palette"] = extract_palette_from_prose(output.get("color_direction", "") or "")
     elif stage == "Challenge":
         positioning = json.dumps(session.stage_outputs.get("Position", {}))
         shape_output = session.stage_outputs.get("Shape", {})
         
-        candidate_names = [c["name"] for c in shape_output.get("candidates", []) if "name" in c]
-        candidate_taglines = [t for t in shape_output.get("tagline_options", [])]
+        candidate_names = [c["name"] for c in (shape_output.get("candidates") or []) if "name" in c]
+        candidate_taglines = [t for t in (shape_output.get("tagline_options") or [])]
         
         candidates = []
         for name in candidate_names:
@@ -558,7 +561,7 @@ async def run_stage(stage: str, session: BaseModel):
         # Carry forward and strictly bind palette from Visualize
         visualize_output = session.stage_outputs.get("Visualize", {})
         visual_palette = visualize_output.get("palette") or extract_palette_from_prose(
-            output.get("visual_identity", {}).get("color_direction", "") or visualize_output.get("color_direction", "")
+            ((output.get("visual_identity") or {}).get("color_direction", "")) or (visualize_output.get("color_direction", "")) or ""
         )
         if visual_palette:
             if "visual_identity" in output and isinstance(output["visual_identity"], dict):
@@ -581,11 +584,13 @@ async def run_pipeline_task(session_id: str):
         
     is_golden = session_id == "golden-demo"
     timeout = int(os.environ.get("PIPELINE_TIMEOUT_SECONDS", 600))
+    sem = None if is_golden else get_pipeline_semaphore()
     
-    async def _execute():
-        global queue_waiters
-        if not is_golden:
-            sem = get_pipeline_semaphore()
+    global queue_waiters
+    acquired_sem = False
+    
+    try:
+        if sem:
             if sem.locked():
                 if queue_waiters >= MAX_QUEUE_LENGTH:
                     await store.add_event(session_id, {
@@ -594,76 +599,68 @@ async def run_pipeline_task(session_id: str):
                     })
                     store.set_status(session_id, "error")
                     return
-                
                 queue_waiters += 1
-                await store.add_event(session_id, {
-                    "event": "queued",
-                    "data": json.dumps({"sessionId": session_id, "position": queue_waiters})
-                })
-                async with sem:
+                try:
+                    await store.add_event(session_id, {
+                        "event": "queued",
+                        "data": json.dumps({"sessionId": session_id, "position": queue_waiters})
+                    })
+                    await asyncio.wait_for(sem.acquire(), timeout=timeout)
+                    acquired_sem = True
+                finally:
                     queue_waiters -= 1
-                    await _do_run()
             else:
-                async with sem:
-                    await _do_run()
-        else:
-            await _do_run()
+                await asyncio.wait_for(sem.acquire(), timeout=timeout)
+                acquired_sem = True
 
-    async def _do_run():
-        try:
-            total = len(STAGES)
-            for i, stage in enumerate(STAGES):
-                await store.add_event(session_id, {
-                    "event": "stage_start",
-                    "data": json.dumps({
-                        "sessionId": session_id,
-                        "stage": stage,
-                        "index": i,
-                        "total": total
-                    })
-                })
-                
-                if is_golden:
-                    await asyncio.sleep(0.08)
-                    output = session.stage_outputs.get(stage, {})
-                else:
-                    output = await run_stage(stage, session)
-                
-                await store.add_event(session_id, {
-                    "event": "stage_complete",
-                    "data": json.dumps({
-                        "sessionId": session_id,
-                        "stage": stage,
-                        "index": i,
-                        "total": total,
-                        "output": output
-                    })
-                })
-                
-            store.set_status(session_id, "complete")
-            
+        total = len(STAGES)
+        for i, stage in enumerate(STAGES):
             await store.add_event(session_id, {
-                "event": "done",
+                "event": "stage_start",
                 "data": json.dumps({
-                    "brandKit": session.stage_outputs.get("Deliver", {}),
-                    "consistencyCheck": session.stage_outputs.get("ConsistencyCheck", {}),
-                    "challengeOutput": session.stage_outputs.get("Challenge", {}),
-                    "trace": session.trace
+                    "sessionId": session_id,
+                    "stage": stage,
+                    "index": i,
+                    "total": total
                 })
             })
             
-        except Exception as e:
-            store.set_status(session_id, "error")
+            if is_golden:
+                await asyncio.sleep(0.08)
+                output = session.stage_outputs.get(stage, {})
+            else:
+                output = await asyncio.wait_for(run_stage(stage, session), timeout=timeout)
+            
             await store.add_event(session_id, {
-                "event": "error",
-                "data": json.dumps({"message": str(e)})
+                "event": "stage_complete",
+                "data": json.dumps({
+                    "sessionId": session_id,
+                    "stage": stage,
+                    "index": i,
+                    "total": total,
+                    "output": output
+                })
             })
-
-    try:
-        if is_golden:
-            await _execute()
-        else:
-            await asyncio.wait_for(_execute(), timeout=timeout)
+            
+        store.set_status(session_id, "complete")
+        
+        await store.add_event(session_id, {
+            "event": "done",
+            "data": json.dumps({
+                "brandKit": session.stage_outputs.get("Deliver", {}),
+                "consistencyCheck": session.stage_outputs.get("ConsistencyCheck", {}),
+                "challengeOutput": session.stage_outputs.get("Challenge", {}),
+                "trace": session.trace
+            })
+        })
+            
+    except asyncio.CancelledError:
+        store.set_status(session_id, "error")
+        await store.add_event(session_id, {
+            "event": "error",
+            "data": json.dumps({"message": "Pipeline cancelled"})
+        })
+        raise
     except asyncio.TimeoutError:
         store.set_status(session_id, "error")
         await store.add_event(session_id, {
@@ -676,6 +673,10 @@ async def run_pipeline_task(session_id: str):
             "event": "error",
             "data": json.dumps({"message": str(e)})
         })
+    finally:
+        if acquired_sem and sem:
+            sem.release()
+            acquired_sem = False
 
 
 @app.get("/api/pipeline/stream/{session_id}")

@@ -182,8 +182,24 @@ export function subscribeToPipelineStream(
 ): () => void {
   const eventSource = new EventSource(`${API_BASE_URL}/api/pipeline/stream/${sessionId}`);
 
+  let stallTimeoutId: any;
+  const resetStallWatchdog = () => {
+    if (stallTimeoutId) clearTimeout(stallTimeoutId);
+    stallTimeoutId = setTimeout(() => {
+      eventSource.close();
+      onError({ message: "Pipeline stalled for over 60 seconds. Please retry or Watch Golden Demo." });
+    }, 60000);
+  };
+
+  resetStallWatchdog();
+
+  eventSource.addEventListener('queued', () => {
+    resetStallWatchdog();
+  });
+
   // A stage has started
   eventSource.addEventListener('stage_start', (e: MessageEvent) => {
+    resetStallWatchdog();
     try {
       const data = JSON.parse(e.data);
       onEvent({
@@ -196,6 +212,7 @@ export function subscribeToPipelineStream(
   });
 
   eventSource.addEventListener('challenger_eval', (e: MessageEvent) => {
+    resetStallWatchdog();
     try {
       const data = JSON.parse(e.data);
       if (data.item) {
@@ -235,6 +252,7 @@ export function subscribeToPipelineStream(
 
   // A stage finished — may carry a challenger critique or partial brand data
   eventSource.addEventListener('stage_complete', (e: MessageEvent) => {
+    resetStallWatchdog();
     try {
       const data = JSON.parse(e.data);
       let traceLogs: ChallengerLog[] | undefined;
@@ -314,6 +332,7 @@ export function subscribeToPipelineStream(
   // Pipeline fully finished — CRITICAL: close the connection or the browser
   // will auto-reconnect and restart the whole pipeline in a loop.
   eventSource.addEventListener('done', (e: MessageEvent) => {
+    if (stallTimeoutId) clearTimeout(stallTimeoutId);
     try {
       eventSource.close();
       const data = e.data ? JSON.parse(e.data) : {};
@@ -407,6 +426,7 @@ export function subscribeToPipelineStream(
 
   // Server explicitly sent an error event
   eventSource.addEventListener('error', (e: any) => {
+    if (stallTimeoutId) clearTimeout(stallTimeoutId);
     eventSource.close();
     // Only treat as a real error if the connection is actually closed/broken.
     // A named "error" event with data is a backend-reported error, not a network drop.
@@ -423,6 +443,7 @@ export function subscribeToPipelineStream(
   });
 
   return () => {
+    if (stallTimeoutId) clearTimeout(stallTimeoutId);
     eventSource.close();
   };
 }
