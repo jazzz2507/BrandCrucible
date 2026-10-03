@@ -221,7 +221,8 @@ export function subscribeToPipelineStream(
           });
         }).filter((log: ChallengerLog) => {
           const l = log.item?.trim().toLowerCase();
-          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null';
+          const hasCritique = log.critique?.trim().length > 0;
+          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null' && hasCritique;
         });
       }
       
@@ -276,6 +277,7 @@ export function subscribeToPipelineStream(
   // will auto-reconnect and restart the whole pipeline in a loop.
   eventSource.addEventListener('done', (e: MessageEvent) => {
     try {
+      eventSource.close();
       const data = e.data ? JSON.parse(e.data) : {};
       let payload: BrandKitData | undefined;
       let traceLogs: ChallengerLog[] = [];
@@ -299,7 +301,8 @@ export function subscribeToPipelineStream(
           });
         }).filter((log: ChallengerLog) => {
           const l = log.item?.trim().toLowerCase();
-          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null';
+          const hasCritique = log.critique?.trim().length > 0;
+          return l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null' && hasCritique;
         });
       } else if (Array.isArray(data.trace)) {
         const itemMap = new Map<string, ChallengerLog>();
@@ -310,13 +313,10 @@ export function subscribeToPipelineStream(
               const itemName = parsed.item || parsed.target || parsed.candidate || parsed.name || parsed.value || '';
               const critiqueText = parsed.feedback || parsed.explanation || parsed.critique || '';
               if (itemName && parsed.verdict) {
-                let cardLabel = itemName;
-                const quoteMatch = critiqueText?.match(/['"`]([^'"`]{2,40})['"`]/);
-                if (quoteMatch && quoteMatch[1] && !critiqueText.toLowerCase().includes(cardLabel.toLowerCase())) {
-                  cardLabel = quoteMatch[1];
-                }
-                const l = cardLabel.trim().toLowerCase();
-                if (l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null') {
+                let cardLabel = itemName.trim();
+                const l = cardLabel.toLowerCase();
+                const hasCritique = critiqueText?.trim().length > 0;
+                if (l && l !== '' && l !== '?' && l !== 'undefined' && l !== 'null' && hasCritique) {
                   const log = {
                     stage: `Challenge (${cardLabel})`,
                     critique: critiqueText,
@@ -364,13 +364,12 @@ export function subscribeToPipelineStream(
       });
     } catch (err) {
       console.error('Failed to parse done payload:', err);
-    } finally {
-      eventSource.close();
     }
   });
 
   // Server explicitly sent an error event
   eventSource.addEventListener('error', (e: any) => {
+    eventSource.close();
     // Only treat as a real error if the connection is actually closed/broken.
     // A named "error" event with data is a backend-reported error, not a network drop.
     if (e.data) {
@@ -383,7 +382,6 @@ export function subscribeToPipelineStream(
     } else if (eventSource.readyState === EventSource.CLOSED) {
       onError(e);
     }
-    eventSource.close();
   });
 
   return () => {

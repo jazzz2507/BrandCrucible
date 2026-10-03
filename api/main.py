@@ -168,7 +168,7 @@ prompts = {
     "Position": "You are the Position agent. Define a clear value proposition, differentiators, competitive angle, and positioning statement using the idea and discovery context. This stage is strategic positioning only: do not generate names, taglines, personality, voice, or visual directions. Be specific to this idea and audience, avoiding generic claims. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nDiscovery: {discovery}",
     "Shape": "You are the Shape agent. Create candidate brand names with rationale and risk, personality traits, tagline options, and a concise voice description using the positioning context. This stage handles verbal identity only: do not revisit discovery, rewrite positioning, or suggest colors, typography, or imagery. Make ideas memorable and specific to this startup, not generic. If revision guidance is supplied, address it directly. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\n{revision_guidance}",
     "Visualize": "You are the Visualize agent. Propose a cohesive color, typography, and imagery direction, with rationale grounded in the brand strategy and personality. In color_direction, explicitly define the palette naming 3 core brand colors (Primary, Secondary, Accent) alongside their exact 6-digit hex codes (e.g. 'Primary: Electric Lime (#39FF14), Secondary: Obsidian Slate (#18181B), Accent: Warm Alabaster (#F4F4F5)'). This stage is visual direction only: do not invent names, taglines, or revise the positioning. Be concrete and specific to this brand rather than relying on generic design adjectives. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nPositioning: {positioning}\nShape: {shape}",
-    "Challenge": "You are the Challenge agent. Critically assess one supplied brand item against its positioning context. The candidate item to evaluate is: '{item}'. The 'item' (target/candidate) field in your output MUST be copied verbatim (exact character match) from this supplied item string, and your 'feedback' / explanation text must critique that exact candidate string without inventing, substituting, or hallucinating a different name or tagline. Score cliche risk, distinctiveness, audience fit, and consistency with positioning from 0 to 10; for cliche risk, a higher score means lower risk / more original. Give actionable feedback and a pass, revise, or reject verdict. Do not generate a replacement or change the strategy. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nItem: {item}\nPositioning: {positioning}",
+    "Challenge": "You are the Challenge agent. Critically assess one supplied brand item against its positioning context. You are evaluating ONLY this exact candidate: '{item}'. Do NOT reference, compare, or critique any other candidate from earlier turns in your feedback. The 'item' (target/candidate) field in your output MUST be copied verbatim (exact character match) from this supplied item string, and your 'feedback' / explanation text must critique that exact candidate string without inventing, substituting, or hallucinating a different name or tagline. Score cliche risk, distinctiveness, audience fit, and consistency with positioning from 0 to 10; for cliche risk, a higher score means lower risk / more original. Give actionable feedback and a pass, revise, or reject verdict. Do not generate a replacement or change the strategy. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nItem: {item}\nPositioning: {positioning}",
     "Deliver": "You are the Deliver agent. Compile the validated prior-stage decisions into one clean, exportable brand kit using the supplied chosen name, tagline, discovery, positioning, verbal identity, and visual direction. This stage compiles only: do not invent missing strategy or add new creative directions. Keep every field specific and faithful to supplied outputs. Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nName: {name}\nTagline: {tagline}\nDiscovery: {discovery}\nPositioning: {positioning}\nShape: {shape}\nVisual: {visual}",
     "ConsistencyCheck": "You are the Consistency Check agent. Critically evaluate the final compiled brand kit as a whole against the original idea and prior stage decisions. Check specifically:\n1. Does the final brand name match the original idea?\n2. Does the tagline directly support the positioning?\n3. Do the brand personality traits match the discovered audience and problem?\n4. Does the visual identity fit the brand personality and positioning?\n5. Is there overall coherence across name, tagline, positioning, voice, and visual identity?\n6. Has the brand drifted from the core problem and audience of the original idea?\n\nEvaluate issues (if any) with area, description, and severity (\"minor\" | \"major\"). Provide an overall_score from 0 to 10, a boolean is_consistent (true if score >= 7 and no unaddressed major disconnects), and a concise summary (one or two sentences). Return ONLY valid JSON matching the provided schema, with no preamble or markdown fences.\nIdea: {idea}\nBrand Kit: {brand_kit}"
 }
@@ -240,58 +240,6 @@ def rank_by_score(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     import functools
     return sorted(items, key=functools.cmp_to_key(cmp))
 
-def match_candidate_name(
-    target_name: str,
-    feedback: str,
-    all_candidates: Optional[List[str]] = None
-) -> str:
-    """
-    Reconciles candidate name against candidates list and feedback text.
-    If the explanation explicitly quotes or references a different candidate name
-    from the candidate list, reconcile the card label to match the quoted name.
-    Matches candidates by exact name or normalized string similarity.
-    """
-    if not all_candidates:
-        return target_name.strip()
-
-    target_clean = target_name.strip().strip("'\"`")
-    feedback_lower = feedback.lower() if feedback else ""
-
-    # 1. If explanation explicitly quotes a candidate name from all_candidates:
-    quoted_candidates = []
-    for cand in all_candidates:
-        cand_clean = cand.strip().strip("'\"`")
-        pattern = rf'[\'"`]{re.escape(cand_clean.lower())}[\'"`]'
-        match = re.search(pattern, feedback_lower)
-        if match:
-            quoted_candidates.append((match.start(), cand_clean))
-
-    if quoted_candidates:
-        quoted_candidates.sort(key=lambda x: x[0])
-        earliest_quoted = quoted_candidates[0][1]
-        if target_clean.lower() not in feedback_lower or quoted_candidates[0][0] <= 15:
-            return earliest_quoted
-
-    # 2. Check if feedback begins with another candidate name:
-    for cand in all_candidates:
-        cand_clean = cand.strip().strip("'\"`")
-        pattern = rf'^\s*(?:the\s+)?(?:name|tagline)?\s*[\'"`]?{re.escape(cand_clean.lower())}[\'"`]?'
-        if re.search(pattern, feedback_lower):
-            if target_clean.lower() not in feedback_lower:
-                return cand_clean
-
-    # 3. Check exact matches (case-insensitive)
-    for cand in all_candidates:
-        if cand.strip().strip("'\"`").lower() == target_clean.lower():
-            return cand.strip().strip("'\"`")
-
-    # 4. Normalized string similarity match
-    close_matches = difflib.get_close_matches(target_clean, all_candidates, n=1, cutoff=0.6)
-    if close_matches:
-        return close_matches[0].strip().strip("'\"`")
-
-    return target_clean
-
 def select_candidate(ranked_items: List[Dict[str, Any]], fallback_candidates: List[Any], fallback_key: str = "name") -> str:
     if ranked_items:
         return ranked_items[0].get("value", "")
@@ -329,13 +277,8 @@ async def run_challenger_item(
         prompt = prompts["Challenge"].format(item=item_val, positioning=positioning)
         res = await call_llm_fn("Challenge", prompt, ChallengeSchema, session)
         
-        current_item = res.item if res.item else item_val
+        current_item = item_val.strip()
         feedback_text = res.feedback or ""
-        
-        if current_item.lower() not in feedback_text.lower():
-            quote_match = re.search(r'[\'"`]([^\'"`]{2,100})[\'"`]', feedback_text)
-            if quote_match:
-                current_item = quote_match.group(1)
         
         res_dump = res.model_dump()
         res_dump["item"] = current_item

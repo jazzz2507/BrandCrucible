@@ -14,6 +14,7 @@ export default function App() {
   const [traceLogs, setTraceLogs] = useState<ChallengerLog[]>([]);
   const [elapsedTime, setElapsedTime] = useState(0);
   const cleanupStreamRef = useRef<(() => void) | null>(null);
+  const isRunningRef = useRef(false);
 
   const STAGE_STATUS_MESSAGES = [
     "Stage 1/7: Discovering audience & core problem...",
@@ -55,6 +56,8 @@ export default function App() {
   };
 
   const handleStartPipeline = async (idea: string) => {
+    if (isRunningRef.current) return;
+    isRunningRef.current = true;
     setViewState('running');
     setCurrentStageIndex(0);
     setTraceLogs([]);
@@ -77,7 +80,11 @@ export default function App() {
             setTraceLogs((prev) => {
               const newLogs = [...prev];
               for (const log of event.traceLogs!) {
-                if (!newLogs.some(l => l.stage === log.stage && l.critique === log.critique)) {
+                const isDup = newLogs.some(l => 
+                  l.critique.trim().toLowerCase() === log.critique.trim().toLowerCase() ||
+                  (l.item === log.item && l.verdict === log.verdict)
+                );
+                if (!isDup) {
                   newLogs.push(log);
                 }
               }
@@ -88,21 +95,26 @@ export default function App() {
             setBrandKitData((prev) => ({ ...prev, ...event.payload }));
           }
           if (event.isComplete === true) {
+            isRunningRef.current = false;
             setTimeout(() => setViewState('dashboard'), 1200);
           }
         },
         (_err) => {
           console.warn('Backend connection failed. Switching to demo simulation mode.');
+          isRunningRef.current = false;
           startSimulationMode();
         }
       );
     } catch (_error) {
       console.warn('Backend endpoint unreachable. Falling back to demo simulation mode.');
+      isRunningRef.current = false;
       startSimulationMode();
     }
   };
 
   const handleStartGoldenDemo = () => {
+    if (isRunningRef.current) return;
+    isRunningRef.current = true;
     setViewState('running');
     setCurrentStageIndex(0);
     setTraceLogs([]);
@@ -122,7 +134,11 @@ export default function App() {
           setTraceLogs((prev) => {
             const newLogs = [...prev];
             for (const log of event.traceLogs!) {
-              if (!newLogs.some(l => l.stage === log.stage && l.critique === log.critique)) {
+              const isDup = newLogs.some(l => 
+                l.critique.trim().toLowerCase() === log.critique.trim().toLowerCase() ||
+                (l.item === log.item && l.verdict === log.verdict)
+              );
+              if (!isDup) {
                 newLogs.push(log);
               }
             }
@@ -133,11 +149,13 @@ export default function App() {
           setBrandKitData((prev) => ({ ...prev, ...event.payload }));
         }
         if (event.isComplete === true) {
+          isRunningRef.current = false;
           setTimeout(() => setViewState('dashboard'), 1200);
         }
       },
       (_err) => {
         console.warn('Backend connection failed. Switching to demo simulation mode.');
+        isRunningRef.current = false;
         startSimulationMode();
       }
     );
