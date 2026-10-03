@@ -126,7 +126,21 @@ def start_interview(payload: IdeaInput, request: Request):
         
     check_rate_limit(request)
     
+    ip = request.headers.get("x-forwarded-for")
+    if ip:
+        ip = ip.split(",")[0].strip()
+    else:
+        ip = request.client.host
+        
+    # Cancel any running task for this IP
+    for sid, sess in store._store.items():
+        if sess.ip == ip and sess.status == "running":
+            if sid in store._tasks:
+                store._tasks[sid].cancel()
+            store.set_status(sid, "error")
+    
     session = store.create(idea=idea)
+    session.ip = ip
     return {
         "sessionId": session.session_id,
         "question": f"Interesting idea: '{idea}'. Who is your primary target customer?"
@@ -263,14 +277,13 @@ async def run_challenger_item(
     call_llm_fn=None,
     sleep_fn=None,
     all_candidates: Optional[List[str]] = None
-) -> Dict[str, Any]:
+) -> List[Dict[str, Any]]:
     if call_llm_fn is None:
         call_llm_fn = call_stage_llm
     if sleep_fn is None:
         sleep_fn = asyncio.sleep
     item_val = cand["value"]
-    history = []
-    best = None
+    results = []
     revision = 0
     
     while revision <= MAX_REVISIONS:
@@ -280,24 +293,28 @@ async def run_challenger_item(
         current_item = item_val.strip()
         feedback_text = res.feedback or ""
         
-        res_dump = res.model_dump()
-        res_dump["item"] = current_item
-        res_dump["candidate"] = current_item
-        res_dump["target"] = current_item
-        res_dump["name"] = current_item
-        res_dump["value"] = current_item
-        res_dump["feedback"] = feedback_text
-        res_dump["explanation"] = feedback_text
-        res_dump["critique"] = feedback_text
-        
-        history.append(res_dump)
-        
-        scores_dump = res.scores.model_dump()
-        current_avg = average(scores_dump)
-        
-        if best is None or current_avg > average(best["result"]["scores"]):
-            best = {"value": current_item, "result": res_dump, "attempt": revision}
+        verdict = 'revise' if needs_revision(res) else 'pass'
+        if revision == MAX_REVISIONS and verdict == 'revise':
+            verdict = 'reject'
             
+        record = {
+            "type": cand["type"],
+            "value": current_item,
+            "item": current_item,
+            "scores": res.scores.model_dump(),
+            "verdict": verdict,
+            "decision": verdict,
+            "feedback": feedback_text,
+            "history": [{
+                "item": current_item,
+                "feedback": feedback_text,
+                "verdict": verdict,
+                "scores": res.scores.model_dump()
+            }]
+        }
+        
+        results.append(record)
+        
         if not needs_revision(res):
             break
             
@@ -315,26 +332,7 @@ async def run_challenger_item(
             await sleep_fn(4.5)
         revision += 1
         
-    exhausted = False
-    best_res = ChallengeSchema.model_validate(best["result"])
-    if needs_revision(best_res) and len(history) == MAX_REVISIONS + 1:
-        exhausted = True
-        
-    final_verdict = 'revise' if needs_revision(best_res) else 'pass'
-    best["result"]["verdict"] = final_verdict
-    
-    had_revision = len(history) > 1 or any(h.get("verdict") in ("revise", "reject") for h in history)
-    
-    return {
-        "type": cand["type"],
-        "value": best["value"],
-        "scores": best["result"]["scores"],
-        "verdict": final_verdict,
-        "feedback": best["result"]["feedback"],
-        "history": history,
-        "exhausted_revisions": exhausted,
-        "has_revision_remarks": had_revision
-    }
+    return results
 
 def extract_palette_from_prose(color_direction: str) -> List[Dict[str, str]]:
     if not color_direction:
@@ -505,30 +503,32 @@ async def run_stage(stage: str, session: BaseModel):
         
         async def evaluate_candidate(cand):
             pool = list(candidate_names if cand["type"] == "name" else candidate_taglines)
-            res_item = await run_challenger_item(cand, idea, positioning, session, all_candidates=pool)
+            res_items = await run_challenger_item(cand, idea, positioning, session, all_candidates=pool)
             
-            # Emit live event
-            await store.add_event(session.session_id, {
-                "event": "challenger_eval",
-                "data": json.dumps({
-                    "sessionId": session.session_id,
-                    "item": res_item
+            for res_item in res_items:
+                # Emit live event
+                await store.add_event(session.session_id, {
+                    "event": "challenger_eval",
+                    "data": json.dumps({
+                        "sessionId": session.session_id,
+                        "item": res_item
+                    })
                 })
-            })
-            return res_item
+            return res_items
 
         tasks = [evaluate_candidate(cand) for cand in candidates]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        for res_item in results:
-            if isinstance(res_item, Exception):
-                print(f"Candidate evaluation failed: {res_item}")
+        for res_items in results:
+            if isinstance(res_items, Exception):
+                print(f"Candidate evaluation failed: {res_items}")
                 continue
-            val_norm = res_item["value"].strip().lower()
-            if val_norm in seen_values:
-                continue
-            seen_values.add(val_norm)
-            challenge_results.append(res_item)
+            for res_item in res_items:
+                val_norm = res_item["value"].strip().lower()
+                if val_norm in seen_values:
+                    continue
+                seen_values.add(val_norm)
+                challenge_results.append(res_item)
             
         output = {"items": challenge_results}
         
@@ -696,9 +696,12 @@ async def stream_pipeline(session_id: str, request: Request):
         idx = start_index
         cond = store.get_condition(session_id)
         
-        while True:
-            if await request.is_disconnected():
-                break
+        try:
+            while True:
+                if await request.is_disconnected():
+                    if session_id in store._tasks:
+                        store._tasks[session_id].cancel()
+                    break
                 
             while idx < len(session.events):
                 ev = session.events[idx]
@@ -716,6 +719,10 @@ async def stream_pipeline(session_id: str, request: Request):
                 
             async with cond:
                 await cond.wait()
+        finally:
+            if await request.is_disconnected():
+                if session_id in store._tasks:
+                    store._tasks[session_id].cancel()
 
     return EventSourceResponse(
         event_generator(),

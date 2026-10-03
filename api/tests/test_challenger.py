@@ -39,10 +39,9 @@ async def test_challenger_stops_early_on_pass():
 
     assert call_counts["Challenge"] == 1
     assert call_counts["Shape"] == 0
-    assert res["verdict"] == "pass"
-    assert res["value"] == "InitialName"
-    assert res["exhausted_revisions"] is False
-    assert len(res["history"]) == 1
+    assert len(res) == 1
+    assert res[0]["verdict"] == "pass"
+    assert res[0]["value"] == "InitialName"
 
 @pytest.mark.asyncio
 async def test_challenger_makes_at_most_2_attempts():
@@ -65,9 +64,9 @@ async def test_challenger_makes_at_most_2_attempts():
     # MAX_REVISIONS = 1 -> Initial (0) + Revision 1 (1) = 2 total attempts
     assert challenge_calls == 2
     assert shape_calls == 1
-    assert len(res["history"]) == 2
-    assert res["exhausted_revisions"] is True
-    assert res["verdict"] == "revise"
+    assert len(res) == 2
+    assert res[0]["verdict"] == "revise"
+    assert res[1]["verdict"] == "reject"
 
 @pytest.mark.asyncio
 async def test_challenger_tracks_best_scoring_attempt():
@@ -87,11 +86,13 @@ async def test_challenger_tracks_best_scoring_attempt():
     cand = {"type": "name", "value": "Cand_v0"}
     res = await run_challenger_item(cand, idea="startup idea", positioning="positioning text", call_llm_fn=fake_llm)
 
-    # Candidate from attempt 1 (highest score 5.8) should be chosen as best
-    assert res["value"] == "Cand_v1"
-    assert res["scores"]["cliche_risk"] == 5.8
-    assert res["verdict"] == "revise"
-    assert res["exhausted_revisions"] is True
+    # Candidate from attempt 1 (highest score 5.8) should be chosen as best? 
+    # No, we removed best logic. It just returns all items in a list.
+    assert len(res) == 2
+    assert res[0]["value"] == "Cand_v0"
+    assert res[1]["value"] == "Cand_v1"
+    assert res[0]["verdict"] == "revise"
+    assert res[1]["verdict"] == "reject"
 
 @pytest.mark.asyncio
 async def test_challenger_passes_on_second_attempt():
@@ -111,10 +112,11 @@ async def test_challenger_passes_on_second_attempt():
     cand = {"type": "name", "value": "FirstTry"}
     res = await run_challenger_item(cand, idea="startup idea", positioning="positioning text", call_llm_fn=fake_llm)
 
-    assert res["value"] == "SecondTry"
-    assert res["verdict"] == "pass"
-    assert res["exhausted_revisions"] is False
-    assert len(res["history"]) == 2
+    assert len(res) == 2
+    assert res[0]["value"] == "FirstTry"
+    assert res[0]["verdict"] == "revise"
+    assert res[1]["value"] == "SecondTry"
+    assert res[1]["verdict"] == "pass"
 
 @pytest.mark.asyncio
 async def test_challenger_history_is_recorded():
@@ -132,12 +134,11 @@ async def test_challenger_history_is_recorded():
     cand = {"type": "name", "value": "Name_0"}
     res = await run_challenger_item(cand, idea="startup idea", positioning="positioning text", call_llm_fn=fake_llm)
 
-    assert "history" in res
-    assert len(res["history"]) == 2
-    assert res["history"][0]["item"] == "Name_0"
-    assert res["history"][0]["feedback"] == "Feedback 0"
-    assert res["history"][1]["item"] == "Name_1"
-    assert res["history"][1]["feedback"] == "Feedback 1"
+    assert len(res) == 2
+    assert res[0]["item"] == "Name_0"
+    assert res[0]["feedback"] == "Feedback 0"
+    assert res[1]["item"] == "Name_1"
+    assert res[1]["feedback"] == "Feedback 1"
 
 
 def test_challenge_schema_aliases():

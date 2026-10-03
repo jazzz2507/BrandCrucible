@@ -14,6 +14,7 @@ class Session(BaseModel):
     stage_outputs: Dict[str, Any] = Field(default_factory=dict)
     trace: list[Dict[str, Any]] = Field(default_factory=list)
     events: list[Dict[str, Any]] = Field(default_factory=list)
+    ip: str = ""
     created_at: datetime.datetime = Field(default_factory=lambda: datetime.datetime.now(datetime.timezone.utc))
 
 class SessionStore:
